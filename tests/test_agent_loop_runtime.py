@@ -60,6 +60,21 @@ def test_trusted_analysis_tool_profile_exposes_no_domain_tools_by_default(
     assert set(agent.tools.tool_names) == {"message"}
 
 
+@pytest.mark.asyncio
+async def test_readonly_tool_profile_exposes_no_tools_or_mcp(tmp_path: Path) -> None:
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=_SequenceProvider([]),
+        workspace=tmp_path,
+        tool_profile="readonly",
+        mcp_servers={"untrusted": {"command": "must-not-run"}},
+    )
+
+    assert agent.tools.tool_names == []
+    await agent._connect_mcp()
+    assert agent._mcp_connected is False
+
+
 def test_workspace_can_enable_manufacturing_semantics_profile(tmp_path: Path) -> None:
     (tmp_path / "workspace.json").write_text(
         '{"schema_version":1,"runtime_profiles":["manufacturing-semantics"]}',

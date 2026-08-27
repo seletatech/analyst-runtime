@@ -58,7 +58,7 @@ _MONTHLY_ARTIFACT_ID_RE = re.compile(
 
 ProgressTool = dict[str, str]
 ProgressCallback = Callable[[str | None, ProgressTool | str | None], Awaitable[None]]
-ToolProfile = Literal["full", "trusted-analysis"]
+ToolProfile = Literal["full", "trusted-analysis", "readonly"]
 
 
 @dataclass(frozen=True)
@@ -117,7 +117,7 @@ class AgentLoop:
         context_compact_keep_messages: int = 12,
         tool_profile: ToolProfile = "full",
     ):
-        if tool_profile not in {"full", "trusted-analysis"}:
+        if tool_profile not in {"full", "trusted-analysis", "readonly"}:
             raise ValueError(f"Unsupported Analyst Runtime tool profile: {tool_profile!r}")
         self.bus = bus
         self.provider = provider
@@ -208,6 +208,8 @@ class AgentLoop:
 
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
+        if self.tool_profile == "readonly":
+            return
         if self.tool_profile == "trusted-analysis":
             self._register_message_tool()
             self.runtime_profiles.register_tools(self.tools)
@@ -270,6 +272,8 @@ class AgentLoop:
 
     async def _connect_mcp(self) -> None:
         """Connect to configured MCP servers (one-time, lazy)."""
+        if self.tool_profile == "readonly":
+            return
         if self._mcp_connected or not self._mcp_servers:
             return
         self._mcp_connected = True
