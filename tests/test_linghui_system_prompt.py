@@ -1,4 +1,7 @@
+import json
 from pathlib import Path
+
+import pytest
 
 from analyst_runtime.agent.context import ContextBuilder
 from analyst_runtime.agent.loop import AgentLoop
@@ -7,6 +10,23 @@ from analyst_runtime.workspace import WorkspaceConfiguration
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE = ROOT / "workspace"
+
+
+def _is_linghui_workspace() -> bool:
+    config_path = WORKSPACE / "workspace.json"
+    if not config_path.is_file():
+        return False
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return config.get("trusted_gateway", {}).get("project_id") == "linghui-ai-suite"
+
+
+pytestmark = pytest.mark.skipif(
+    not _is_linghui_workspace(),
+    reason="requires the consuming Linghui product workspace",
+)
 
 
 def _system_text(messages: list[dict]) -> str:

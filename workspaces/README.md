@@ -2,17 +2,17 @@
 
 Each folder is a complete product-level system-prompt configuration. Copy its
 `SOUL.md`, `AGENTS.md`, and `workspace.json` into the active product
-`workspace/`. Keep the template directories immutable; Analyst Runtime writes memory
-and session state into the active workspace at runtime.
+`workspace/`. Keep the template directories immutable; Analyst Runtime writes
+memory and session state into the active workspace at runtime.
 
 ```bash
-cp analyst_runtime/workspaces/data-analyst/{SOUL.md,AGENTS.md,workspace.json} workspace/
+cp analyst-runtime/workspaces/data-analyst/{SOUL.md,AGENTS.md,workspace.json} workspace/
 ```
 
 - `SOUL.md` defines who the agent is, such as a data analyst or an executive.
 - `AGENTS.md` defines how that role works and delivers answers.
 - `workspace.json` enables optional runtime profiles. An absent or empty list
-  means the generic Analyst Runtime runtime only.
+  means the generic Analyst Runtime only.
 
 Choose runtime profiles when a product workspace is created. If a profile has
 already persisted owned state, Analyst Runtime fails closed when that profile is

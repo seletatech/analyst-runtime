@@ -6,9 +6,25 @@ from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE = REPO_ROOT / "workspace"
+
+
+def _is_linghui_workspace() -> bool:
+    config_path = WORKSPACE / "workspace.json"
+    if not config_path.is_file():
+        return False
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return config.get("trusted_gateway", {}).get("project_id") == "linghui-ai-suite"
+
+
+pytestmark = pytest.mark.skipif(
+    not _is_linghui_workspace(),
+    reason="requires the consuming Linghui product workspace",
+)
 DATA_ROOT = WORKSPACE / "data"
 HYDRATED_BUSINESS_DATA = all(
     path.exists()
@@ -82,8 +98,7 @@ def test_workspace_contains_only_minimal_prompt_and_business_data() -> None:
 
 def test_prompt_is_management_focused_without_fixed_metric_checklist() -> None:
     prompt = "\n".join(
-        (WORKSPACE / name).read_text(encoding="utf-8")
-        for name in ("SOUL.md", "AGENTS.md")
+        (WORKSPACE / name).read_text(encoding="utf-8") for name in ("SOUL.md", "AGENTS.md")
     )
     for required in ("管理决策", "业务结果", "异常", "行动"):
         assert required in prompt
@@ -109,12 +124,7 @@ def test_production_data_contains_only_business_json() -> None:
         for path in DATA_ROOT.iterdir()
         if path.is_dir() and len(path.name) == 7 and path.name[4] == "-"
     ]
-    files = [
-        path
-        for root in production_roots
-        for path in root.rglob("*")
-        if path.is_file()
-    ]
+    files = [path for root in production_roots for path in root.rglob("*") if path.is_file()]
     files.append(DATA_ROOT / "manifest.json")
     assert files
     assert all(path.suffix == ".json" for path in files)
@@ -129,9 +139,7 @@ def test_production_data_contains_only_business_json() -> None:
 )
 def test_raw_supplemental_sources_are_available() -> None:
     manifest = json.loads((DATA_ROOT / "manifest.json").read_text(encoding="utf-8"))
-    source_directories = {
-        item["directory"] for item in manifest["supplemental_sources"]
-    }
+    source_directories = {item["directory"] for item in manifest["supplemental_sources"]}
     assert source_directories == {"procurement", "quality"}
     assert any((DATA_ROOT / "procurement").rglob("*"))
     assert any((DATA_ROOT / "quality").rglob("*"))
