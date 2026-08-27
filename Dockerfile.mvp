@@ -2,6 +2,8 @@ ARG ANALYST_RUNTIME_BASE_IMAGE=ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 FROM ${ANALYST_RUNTIME_BASE_IMAGE}
 
 ARG ANALYST_RUNTIME_VERSION=dev
+# 1 = release wheelhouse (offline, default); online = locked registry install for
+# local development; 0 = dependencies are already present in the base image.
 ARG ANALYST_RUNTIME_INSTALL_DEPENDENCIES=1
 
 # The internal MVP only runs Analyst Runtime's HTTP-polling sandbox. WhatsApp, browser
@@ -17,18 +19,33 @@ RUN uv export \
       --format requirements-txt \
       --no-emit-project \
       --output-file /tmp/analyst-runtime-requirements.txt \
-    && if [ "$ANALYST_RUNTIME_INSTALL_DEPENDENCIES" = "1" ]; then \
-         find /opt/analyst-runtime-wheels -maxdepth 1 -name '*.whl' -print -quit | grep -q . \
-           || { echo 'Analyst Runtime release wheelhouse is missing'; exit 1; }; \
-         uv pip install \
-           --system \
-           --offline \
-           --no-index \
-           --find-links /opt/analyst-runtime-wheels \
-           --require-hashes \
-           --no-cache \
-           -r /tmp/analyst-runtime-requirements.txt; \
-       fi
+    && case "$ANALYST_RUNTIME_INSTALL_DEPENDENCIES" in \
+         1) \
+           find /opt/analyst-runtime-wheels -maxdepth 1 -name '*.whl' -print -quit | grep -q . \
+             || { echo 'Analyst Runtime release wheelhouse is missing'; exit 1; }; \
+           uv pip install \
+             --system \
+             --offline \
+             --no-index \
+             --find-links /opt/analyst-runtime-wheels \
+             --require-hashes \
+             --no-cache \
+             -r /tmp/analyst-runtime-requirements.txt \
+           ;; \
+         online) \
+           uv pip install \
+             --system \
+             --require-hashes \
+             --no-cache \
+             -r /tmp/analyst-runtime-requirements.txt \
+           ;; \
+         0) \
+           ;; \
+         *) \
+           echo 'ANALYST_RUNTIME_INSTALL_DEPENDENCIES must be 1, online, or 0' \
+           exit 1 \
+           ;; \
+       esac
 
 COPY analyst-runtime/analyst_runtime/ analyst_runtime/
 RUN mkdir -p bridge /root/.analyst-runtime
