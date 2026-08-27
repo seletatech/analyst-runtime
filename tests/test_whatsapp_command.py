@@ -16,8 +16,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from nanobot.bus.events import InboundMessage
-from nanobot.bus.queue import MessageBus
+from analyst_runtime.bus.events import InboundMessage
+from analyst_runtime.bus.queue import MessageBus
 
 
 # ---------------------------------------------------------------------------
@@ -36,8 +36,8 @@ def _make_inbound(content: str) -> InboundMessage:
 def _make_agent(workspace: Path):
     """Create a minimal AgentLoop with a fake provider."""
     from unittest.mock import MagicMock
-    from nanobot.agent.loop import AgentLoop
-    from nanobot.bus.queue import MessageBus
+    from analyst_runtime.agent.loop import AgentLoop
+    from analyst_runtime.bus.queue import MessageBus
 
     bus = MessageBus()
     provider = MagicMock()
@@ -65,8 +65,8 @@ def _make_channel_manager_without_whatsapp():
 
 def _make_channel_manager_with_connected_whatsapp():
     """ChannelManager stub where WhatsApp is already running."""
-    from nanobot.channels.whatsapp import WhatsAppChannel
-    from nanobot.config.schema import WhatsAppConfig
+    from analyst_runtime.channels.whatsapp import WhatsAppChannel
+    from analyst_runtime.config.schema import WhatsAppConfig
 
     wa = MagicMock(spec=WhatsAppChannel)
     wa.is_running = True
@@ -91,7 +91,7 @@ async def test_whatsapp_stale_connected_status_starts_bridge(tmp_path: Path) -> 
     never started the bridge — leaving WhatsApp messages unrouted.
     """
     # Write stale "connected" status (from a previous container session)
-    wa_dir = tmp_path / ".nanobot" / "whatsapp"
+    wa_dir = tmp_path / ".analyst-runtime" / "whatsapp"
     wa_dir.mkdir(parents=True)
     (wa_dir / "status.json").write_text(json.dumps({"state": "connected", "ts": "2026-01-01T00:00:00+00:00"}))
 
@@ -104,9 +104,9 @@ async def test_whatsapp_stale_connected_status_starts_bridge(tmp_path: Path) -> 
         bridge_started.append(True)
         return True
 
-    with patch("nanobot.utils.helpers.get_data_path", return_value=tmp_path / ".nanobot"):
+    with patch("analyst_runtime.utils.helpers.get_data_path", return_value=tmp_path / ".analyst-runtime"):
         # Patch WhatsAppChannel so we control start_bridge
-        with patch("nanobot.channels.whatsapp.WhatsAppChannel") as MockWA:
+        with patch("analyst_runtime.channels.whatsapp.WhatsAppChannel") as MockWA:
             instance = MagicMock()
             instance.start_bridge = fake_start_bridge
             MockWA.return_value = instance
@@ -123,7 +123,7 @@ async def test_whatsapp_stale_connected_status_starts_bridge(tmp_path: Path) -> 
 @pytest.mark.asyncio
 async def test_whatsapp_stale_qr_pending_status_restarts_bridge(tmp_path: Path) -> None:
     """Stale 'qr_pending' status with no running channel should restart bridge, not freeze on old QR."""
-    wa_dir = tmp_path / ".nanobot" / "whatsapp"
+    wa_dir = tmp_path / ".analyst-runtime" / "whatsapp"
     wa_dir.mkdir(parents=True)
     (wa_dir / "status.json").write_text(json.dumps({"state": "qr_pending", "ts": "2026-01-01T00:00:00+00:00"}))
 
@@ -136,8 +136,8 @@ async def test_whatsapp_stale_qr_pending_status_restarts_bridge(tmp_path: Path) 
         bridge_started.append(True)
         return True
 
-    with patch("nanobot.utils.helpers.get_data_path", return_value=tmp_path / ".nanobot"):
-        with patch("nanobot.channels.whatsapp.WhatsAppChannel") as MockWA:
+    with patch("analyst_runtime.utils.helpers.get_data_path", return_value=tmp_path / ".analyst-runtime"):
+        with patch("analyst_runtime.channels.whatsapp.WhatsAppChannel") as MockWA:
             instance = MagicMock()
             instance.start_bridge = fake_start_bridge
             MockWA.return_value = instance
@@ -151,14 +151,14 @@ async def test_whatsapp_stale_qr_pending_status_restarts_bridge(tmp_path: Path) 
 @pytest.mark.asyncio
 async def test_whatsapp_live_connected_channel_returns_already_connected(tmp_path: Path) -> None:
     """When the WhatsApp channel is actually running, /whatsapp confirms connected."""
-    wa_dir = tmp_path / ".nanobot" / "whatsapp"
+    wa_dir = tmp_path / ".analyst-runtime" / "whatsapp"
     wa_dir.mkdir(parents=True)
     (wa_dir / "status.json").write_text(json.dumps({"state": "connected", "ts": "2026-01-01T00:00:00+00:00"}))
 
     agent, _bus = _make_agent(tmp_path)
     agent.channel_manager = _make_channel_manager_with_connected_whatsapp()
 
-    with patch("nanobot.utils.helpers.get_data_path", return_value=tmp_path / ".nanobot"):
+    with patch("analyst_runtime.utils.helpers.get_data_path", return_value=tmp_path / ".analyst-runtime"):
         result = await agent._process_message(_make_inbound("/whatsapp"))
 
     assert result is not None
@@ -179,8 +179,8 @@ async def test_whatsapp_no_status_file_starts_bridge(tmp_path: Path) -> None:
         bridge_started.append(True)
         return True
 
-    with patch("nanobot.utils.helpers.get_data_path", return_value=tmp_path / ".nanobot"):
-        with patch("nanobot.channels.whatsapp.WhatsAppChannel") as MockWA:
+    with patch("analyst_runtime.utils.helpers.get_data_path", return_value=tmp_path / ".analyst-runtime"):
+        with patch("analyst_runtime.channels.whatsapp.WhatsAppChannel") as MockWA:
             instance = MagicMock()
             instance.start_bridge = fake_start_bridge
             MockWA.return_value = instance
@@ -204,9 +204,9 @@ async def test_self_only_message_reaches_bus(tmp_path: Path) -> None:
     The fix: WhatsApp self-only mode must bypass is_allowed() (or ensure the
     sender is added to the allow list before _handle_message is called).
     """
-    from nanobot.bus.queue import MessageBus
-    from nanobot.channels.whatsapp import WhatsAppChannel
-    from nanobot.config.schema import WhatsAppConfig
+    from analyst_runtime.bus.queue import MessageBus
+    from analyst_runtime.channels.whatsapp import WhatsAppChannel
+    from analyst_runtime.config.schema import WhatsAppConfig
 
     bus = MessageBus()
     cfg = WhatsAppConfig(enabled=True)  # allow_from=[] (self-only mode)
@@ -252,9 +252,9 @@ async def test_self_only_message_with_lid_reaches_bus(tmp_path: Path) -> None:
     Python picked sender_id from the LID (pn field) but own_phone comes from
     own_jid which is always phone-format — so the comparison always failed.
     """
-    from nanobot.bus.queue import MessageBus
-    from nanobot.channels.whatsapp import WhatsAppChannel
-    from nanobot.config.schema import WhatsAppConfig
+    from analyst_runtime.bus.queue import MessageBus
+    from analyst_runtime.channels.whatsapp import WhatsAppChannel
+    from analyst_runtime.config.schema import WhatsAppConfig
 
     bus = MessageBus()
     cfg = WhatsAppConfig(enabled=True)
@@ -298,9 +298,9 @@ async def test_self_only_subsequent_messages_not_blocked(tmp_path: Path) -> None
     non-empty allow_from, skipped the self-only JID check, entered the allow_from
     branch, hit _is_sender_authorized (which requires gateway auth), and was dropped.
     """
-    from nanobot.bus.queue import MessageBus
-    from nanobot.channels.whatsapp import WhatsAppChannel
-    from nanobot.config.schema import WhatsAppConfig
+    from analyst_runtime.bus.queue import MessageBus
+    from analyst_runtime.channels.whatsapp import WhatsAppChannel
+    from analyst_runtime.config.schema import WhatsAppConfig
 
     bus = MessageBus()
     cfg = WhatsAppConfig(enabled=True)  # allow_from=[] — self-only mode
@@ -345,9 +345,9 @@ async def test_self_only_subsequent_messages_not_blocked(tmp_path: Path) -> None
 @pytest.mark.asyncio
 async def test_non_self_message_blocked_in_self_only_mode(tmp_path: Path) -> None:
     """A message from a different phone is blocked in self-only mode."""
-    from nanobot.bus.queue import MessageBus
-    from nanobot.channels.whatsapp import WhatsAppChannel
-    from nanobot.config.schema import WhatsAppConfig
+    from analyst_runtime.bus.queue import MessageBus
+    from analyst_runtime.channels.whatsapp import WhatsAppChannel
+    from analyst_runtime.config.schema import WhatsAppConfig
 
     bus = MessageBus()
     cfg = WhatsAppConfig(enabled=True)

@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from nanobot.agent.loop import AgentLoop
+from analyst_runtime.agent.loop import AgentLoop
 
 
 # ---------------------------------------------------------------------------

@@ -12,7 +12,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 HELPER = (
     ROOT
-    / "nanobot"
+    / "analyst_runtime"
     / "workspace"
     / "skills"
     / "linghui-manufacturing-data-analyst"

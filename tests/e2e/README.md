@@ -14,11 +14,11 @@ tools, or skills to verify the full stack works against a live LLM.
 
 ## Step 1 — Rebuild images from source
 
-Always rebuild when nanobot or API source has changed.
+Always rebuild when analyst_runtime or API source has changed.
 
 ```bash
-# Rebuild nanobot (always do this before running e2e tests)
-scripts/staging/build-nanobot.sh
+# Rebuild analyst_runtime (always do this before running e2e tests)
+scripts/staging/build-analyst_runtime.sh
 
 # Rebuild API only if api/ source changed
 scripts/staging/build-api.sh
@@ -77,10 +77,10 @@ for s in json.load(sys.stdin)['sandboxes']:
 
 Note the `sandbox_id` and `project_id` — you need both below.
 
-**Important:** After rebuilding the nanobot image, stop the old container and respawn:
+**Important:** After rebuilding the analyst_runtime image, stop the old container and respawn:
 
 ```bash
-docker stop nanobot-<old_sandbox_id_first_12_chars>
+docker stop analyst_runtime-<old_sandbox_id_first_12_chars>
 # Then repeat the curl POST above to spawn a fresh container with the new image
 ```
 
@@ -88,17 +88,17 @@ docker stop nanobot-<old_sandbox_id_first_12_chars>
 
 ## Step 3 — Run the tests
 
-Tests **must** be run from the `nanobot/` directory so `pyproject.toml` is loaded:
+Tests **must** be run from the `analyst_runtime/` directory so `pyproject.toml` is loaded:
 
 ```bash
-cd nanobot
+cd analyst_runtime
 
 source ../ops/docker/.env.staging
 export E2E_SANDBOX_ID="<sandbox_id from step 2>"
 export E2E_SANDBOX_INTERNAL_SECRET="$SANDBOX_INTERNAL_SECRET"
 export E2E_API_URL="http://localhost:8000"
 export E2E_WORKSPACE_PATH="/data/sandboxes/<project_id>/workspace"
-export E2E_CONTAINER_NAME="nanobot-<first 12 chars of sandbox_id>"
+export E2E_CONTAINER_NAME="analyst_runtime-<first 12 chars of sandbox_id>"
 export FIRECRAWL_API_KEY="<key from .env.staging>"
 
 pytest tests/e2e/ -m e2e -v --timeout=180
@@ -124,11 +124,11 @@ pytest tests/e2e/test_cron_reminder.py -m e2e -v --timeout=120
 | Thing | Path |
 |-------|------|
 | Session JSONL files | `/data/sandboxes/<project_id>/workspace/sessions/` |
-| Cron jobs store | `/data/sandboxes/<project_id>/workspace/.nanobot/cron/jobs.json` |
-| Container logs | `docker logs nanobot-<sandbox_id[:12]>` |
+| Cron jobs store | `/data/sandboxes/<project_id>/workspace/.analyst-runtime/cron/jobs.json` |
+| Container logs | `docker logs analyst_runtime-<sandbox_id[:12]>` |
 | Session naming | Web-channel sessions: `web_<session_id>.jsonl` · Cron sessions: `cron_<job_id>.jsonl` |
 
-Session files are written by the nanobot container. `E2E_WORKSPACE_PATH` must point to
+Session files are written by the analyst_runtime container. `E2E_WORKSPACE_PATH` must point to
 `/data/sandboxes/<project_id>/workspace` on the **host** — not `$STAGING_SANDBOX_PATH` which
 is the bind-mount source alias used by the API container.
 
@@ -171,7 +171,7 @@ EOF
 | API crash-loop on startup | Stale import of deleted service file | Check `docker logs docker-api-1` for `ModuleNotFoundError` |
 | Cron test: `PermissionError` unlinking session files | Files owned by container root | Use snapshot-then-diff pattern (already in conftest) |
 | Wrong session returned by `/send` | Outbound queue has no correlation | Tests use fire-and-forget + poll JSONL (already fixed in conftest) |
-| `pytest: not in e2e mark` | Running from repo root, not `nanobot/` | `cd nanobot` before running pytest |
+| `pytest: not in e2e mark` | Running from repo root, not `analyst_runtime/` | `cd analyst_runtime` before running pytest |
 
 ---
 
@@ -186,7 +186,7 @@ This is the primary artifact for reviewing whether behavior is consistent with e
 ### Cron Reminders (`test_cron_reminder.py`)
 | Test | Scenario | Validates |
 |------|----------|-----------|
-| `test_reminder_creates_cron_job` | "10秒后提醒我喝水" | cron tool called, `.nanobot/cron/jobs.json` written |
+| `test_reminder_creates_cron_job` | "10秒后提醒我喝水" | cron tool called, `.analyst-runtime/cron/jobs.json` written |
 | `test_reminder_fires_and_agent_runs` | 8s reminder | cron fires within interval, cron session JSONL appears |
 
 ### Web Scraping (`test_web_scrape.py`)
@@ -245,8 +245,8 @@ This is the primary artifact for reviewing whether behavior is consistent with e
 After running, check `tests/e2e/results/YYYY-MM-DD/` for markdown summaries:
 
 ```bash
-ls nanobot/tests/e2e/results/$(date +%Y-%m-%d)/
-cat nanobot/tests/e2e/results/$(date +%Y-%m-%d)/test_twitter_x_url_uses_firecrawl.md
+ls analyst_runtime/tests/e2e/results/$(date +%Y-%m-%d)/
+cat analyst_runtime/tests/e2e/results/$(date +%Y-%m-%d)/test_twitter_x_url_uses_firecrawl.md
 ```
 
 Each file shows: message sent, tools called (in order), final response.

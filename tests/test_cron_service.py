@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from nanobot.cron.service import CronService, _compute_next_run
-from nanobot.cron.types import CronJob, CronPayload, CronSchedule, CronJobState
+from analyst_runtime.cron.service import CronService, _compute_next_run
+from analyst_runtime.cron.types import CronJob, CronPayload, CronSchedule, CronJobState
 
 
 # ---------------------------------------------------------------------------

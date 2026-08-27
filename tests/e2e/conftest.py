@@ -5,7 +5,7 @@ Requires these env vars (set by scripts/staging/run-e2e.sh):
     E2E_SANDBOX_INTERNAL_SECRET — bearer token for /internal/* endpoints
     E2E_API_URL              — http://localhost:8000
     E2E_WORKSPACE_PATH       — host path to sandbox workspace
-    E2E_CONTAINER_NAME       — nanobot-{sandbox_id[:12]}
+    E2E_CONTAINER_NAME       — analyst_runtime-{sandbox_id[:12]}
 
 After each test, call sb.save_result(session_id, test_name, message) to write
 a markdown summary to tests/e2e/results/YYYY-MM-DD/<test_name>.md for human review.
@@ -30,7 +30,7 @@ class StagingSandbox:
         self.secret = os.environ["E2E_SANDBOX_INTERNAL_SECRET"]
         self.api_url = os.environ.get("E2E_API_URL", "http://localhost:8000")
         self.workspace = Path(os.environ["E2E_WORKSPACE_PATH"])
-        self.container = os.environ.get("E2E_CONTAINER_NAME", f"nanobot-{self.sandbox_id[:12]}")
+        self.container = os.environ.get("E2E_CONTAINER_NAME", f"analyst_runtime-{self.sandbox_id[:12]}")
 
     def send(self, content: str, session_id: str, timeout: float = 5.0) -> None:
         """Inject a message fire-and-forget. Does not wait for response."""
@@ -191,12 +191,12 @@ class StagingSandbox:
         empty_store = '{"version":1,"jobs":[]}'
         result = subprocess.run(
             ["docker", "exec", self.container, "sh", "-c",
-             f"mkdir -p /workspace/.nanobot/cron && echo '{empty_store}' > /workspace/.nanobot/cron/jobs.json"],
+             f"mkdir -p /workspace/.analyst-runtime/cron && echo '{empty_store}' > /workspace/.analyst-runtime/cron/jobs.json"],
             capture_output=True, text=True, timeout=10,
         )
         if result.returncode != 0:
             # Fallback: try host-side write
-            jobs_file = self.workspace / ".nanobot" / "cron" / "jobs.json"
+            jobs_file = self.workspace / ".analyst-runtime" / "cron" / "jobs.json"
             jobs_file.parent.mkdir(parents=True, exist_ok=True)
             try:
                 jobs_file.write_text(empty_store, encoding="utf-8")

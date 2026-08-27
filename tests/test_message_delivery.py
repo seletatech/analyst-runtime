@@ -1,7 +1,7 @@
-from nanobot.agent.tools.message import MessageTool
+from analyst_runtime.agent.tools.message import MessageTool
 import json
 
-from nanobot.bus.events import OutboundMessage
+from analyst_runtime.bus.events import OutboundMessage
 
 
 async def test_web_message_tool_marks_delivery_as_intermediate() -> None:
@@ -41,7 +41,7 @@ async def test_web_message_tool_marks_delivery_as_intermediate() -> None:
 async def test_web_message_tool_reports_the_real_attachment_delivery_failure() -> None:
     async def send(message: OutboundMessage) -> None:
         message.delivery.fail(
-            RuntimeError("NANOBOT-ATTACHMENT-001: report.html was rejected")
+            RuntimeError("ANALYST-RUNTIME-ATTACHMENT-001: report.html was rejected")
         )
 
     tool = MessageTool(
@@ -55,5 +55,5 @@ async def test_web_message_tool_reports_the_real_attachment_delivery_failure() -
         media=["artifacts/report.html", "artifacts/result.csv"],
     )
 
-    assert "NANOBOT-ATTACHMENT-001" in result
+    assert "ANALYST-RUNTIME-ATTACHMENT-001" in result
     assert "Message sent" not in result

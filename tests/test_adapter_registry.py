@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 import yaml
 
-from nanobot.agent.tools.registry import (
+from analyst_runtime.agent.tools.registry import (
     ToolRegistry,
     _build_adapter_kwargs,
     register_integration_tools,
@@ -72,7 +72,7 @@ def test_tool_from_manifest_is_registered(tmp_path: Path) -> None:
         adapters:
           - id: notion
             class: NotionTool
-            module: nanobot.agent.tools.notion
+            module: analyst_runtime.agent.tools.notion
             args:
               api_key: {env: NOTION_API_KEY}
     """)
@@ -87,10 +87,10 @@ def test_multiple_tools_from_manifest_registered(tmp_path: Path) -> None:
         adapters:
           - id: gateway_auth
             class: GatewayAuthTool
-            module: nanobot.agent.tools.gateway_auth
+            module: analyst_runtime.agent.tools.gateway_auth
           - id: notion
             class: NotionTool
-            module: nanobot.agent.tools.notion
+            module: analyst_runtime.agent.tools.notion
             args:
               api_key: {env: NOTION_API_KEY}
     """)
@@ -105,10 +105,10 @@ def test_bad_module_skipped_gracefully(tmp_path: Path) -> None:
         adapters:
           - id: bad
             class: DoesNotExist
-            module: nanobot.agent.tools.does_not_exist_xyzzy
+            module: analyst_runtime.agent.tools.does_not_exist_xyzzy
           - id: gateway_auth
             class: GatewayAuthTool
-            module: nanobot.agent.tools.gateway_auth
+            module: analyst_runtime.agent.tools.gateway_auth
     """)
     registry = ToolRegistry()
     register_integration_tools(registry, env={}, manifest=manifest)

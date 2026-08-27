@@ -5,12 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from nanobot.agent.loop import AgentLoop
-from nanobot.bus.events import InboundMessage
-from nanobot.bus.queue import MessageBus
-from nanobot.profiles.manufacturing.intents import ConfirmationIntentJournal
-from nanobot.profiles.manufacturing.memory import CONFIRMATION_PHRASE
-from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from analyst_runtime.agent.loop import AgentLoop
+from analyst_runtime.bus.events import InboundMessage
+from analyst_runtime.bus.queue import MessageBus
+from analyst_runtime.profiles.manufacturing.intents import ConfirmationIntentJournal
+from analyst_runtime.profiles.manufacturing.memory import CONFIRMATION_PHRASE
+from analyst_runtime.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 
 
 @pytest.fixture(autouse=True)

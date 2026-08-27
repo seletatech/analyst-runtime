@@ -1,47 +1,47 @@
-ARG NANOBOT_BASE_IMAGE=ghcr.io/astral-sh/uv:python3.12-bookworm-slim
-FROM ${NANOBOT_BASE_IMAGE}
+ARG ANALYST_RUNTIME_BASE_IMAGE=ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+FROM ${ANALYST_RUNTIME_BASE_IMAGE}
 
-ARG NANOBOT_VERSION=dev
-ARG NANOBOT_INSTALL_DEPENDENCIES=1
+ARG ANALYST_RUNTIME_VERSION=dev
+ARG ANALYST_RUNTIME_INSTALL_DEPENDENCIES=1
 
-# The internal MVP only runs Nanobot's HTTP-polling sandbox. WhatsApp, browser
+# The internal MVP only runs Analyst Runtime's HTTP-polling sandbox. WhatsApp, browser
 # automation, Google Workspace and media tools are deliberately excluded from
 # this image to reduce build time and production attack surface.
 WORKDIR /app
 
-COPY nanobot/pyproject.toml nanobot/uv.lock nanobot/README.md nanobot/LICENSE ./
-COPY nanobot/vendor/ /opt/nanobot-wheels/
+COPY analyst-runtime/pyproject.toml analyst-runtime/uv.lock analyst-runtime/README.md analyst-runtime/LICENSE ./
+COPY analyst-runtime/vendor/ /opt/analyst-runtime-wheels/
 RUN uv export \
       --locked \
       --no-dev \
       --format requirements-txt \
       --no-emit-project \
-      --output-file /tmp/nanobot-requirements.txt \
-    && if [ "$NANOBOT_INSTALL_DEPENDENCIES" = "1" ]; then \
-         find /opt/nanobot-wheels -maxdepth 1 -name '*.whl' -print -quit | grep -q . \
-           || { echo 'NanoBot release wheelhouse is missing'; exit 1; }; \
+      --output-file /tmp/analyst-runtime-requirements.txt \
+    && if [ "$ANALYST_RUNTIME_INSTALL_DEPENDENCIES" = "1" ]; then \
+         find /opt/analyst-runtime-wheels -maxdepth 1 -name '*.whl' -print -quit | grep -q . \
+           || { echo 'Analyst Runtime release wheelhouse is missing'; exit 1; }; \
          uv pip install \
            --system \
            --offline \
            --no-index \
-           --find-links /opt/nanobot-wheels \
+           --find-links /opt/analyst-runtime-wheels \
            --require-hashes \
            --no-cache \
-           -r /tmp/nanobot-requirements.txt; \
+           -r /tmp/analyst-runtime-requirements.txt; \
        fi
 
-COPY nanobot/nanobot/ nanobot/
-RUN mkdir -p bridge /root/.nanobot
+COPY analyst-runtime/analyst_runtime/ analyst_runtime/
+RUN mkdir -p bridge /root/.analyst-runtime
 
 # Production prompts and skills are image content, so the validated image ID
 # also identifies the exact instruction tree. Generated workspace state is
 # excluded by .dockerignore and supplied by scoped runtime volumes instead.
 COPY workspace/ /app/workspace/
 RUN mkdir -p \
-      /app/workspace/.nanobot \
-      /app/workspace/.nanobot/cron \
-      /app/workspace/.nanobot/oauth \
-      /app/workspace/.nanobot/composio \
+      /app/workspace/.analyst-runtime \
+      /app/workspace/.analyst-runtime/cron \
+      /app/workspace/.analyst-runtime/oauth \
+      /app/workspace/.analyst-runtime/composio \
       /app/workspace/sessions \
       /app/workspace/memory \
       /app/workspace/tmp_analysis \
@@ -51,7 +51,7 @@ RUN mkdir -p \
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV WORKSPACE_PATH=/app/workspace
 ENV SANDBOX_ID=default
-ENV NANOBOT_VERSION=${NANOBOT_VERSION}
+ENV ANALYST_RUNTIME_VERSION=${ANALYST_RUNTIME_VERSION}
 
-ENTRYPOINT ["python", "-m", "nanobot"]
+ENTRYPOINT ["python", "-m", "analyst_runtime"]
 CMD ["sandbox"]

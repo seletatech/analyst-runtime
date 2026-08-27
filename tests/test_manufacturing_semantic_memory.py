@@ -5,10 +5,10 @@ from pathlib import Path
 
 import pytest
 
-import nanobot.agent.memory as memory_module
-from nanobot.agent.memory import MAX_MEMORY_CONTEXT_CHARS
-from nanobot.profiles.manufacturing.intents import ConfirmationIntentJournal
-from nanobot.profiles.manufacturing.memory import (
+import analyst_runtime.agent.memory as memory_module
+from analyst_runtime.agent.memory import MAX_MEMORY_CONTEXT_CHARS
+from analyst_runtime.profiles.manufacturing.intents import ConfirmationIntentJournal
+from analyst_runtime.profiles.manufacturing.memory import (
     CONFIRMATION_PHRASE,
     CONFIRMED_SEMANTICS_SECTION,
     MAX_SEMANTICS_SECTION_CHARS,
@@ -16,7 +16,7 @@ from nanobot.profiles.manufacturing.memory import (
     SemanticConfirmationError,
     SemanticMemoryError,
 )
-from nanobot.profiles.manufacturing.tools import (
+from analyst_runtime.profiles.manufacturing.tools import (
     ConfirmManufacturingSemanticsTool,
     ProposeManufacturingSemanticsTool,
 )

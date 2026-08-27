@@ -3,7 +3,7 @@
 Scenario: user asks to be reminded in a few seconds.
 Expected:
   1. Agent calls the cron tool
-  2. .nanobot/cron/jobs.json is written to workspace
+  2. .analyst-runtime/cron/jobs.json is written to workspace
   3. Cron fires within the interval → sessions/cron_*.jsonl appears
 
 Real user basis: Qian's entire power-user pattern is cron-based scheduled tasks
@@ -39,10 +39,10 @@ def test_reminder_creates_cron_job(sb: StagingSandbox) -> None:
     )
 
     # jobs.json must exist at the correct path
-    jobs_file = sb.workspace / ".nanobot" / "cron" / "jobs.json"
+    jobs_file = sb.workspace / ".analyst-runtime" / "cron" / "jobs.json"
     assert jobs_file.exists(), (
-        f".nanobot/cron/jobs.json not created after cron tool call. "
-        f"Workspace contents: {list((sb.workspace / '.nanobot').iterdir()) if (sb.workspace / '.nanobot').exists() else 'no .nanobot dir'}"
+        f".analyst-runtime/cron/jobs.json not created after cron tool call. "
+        f"Workspace contents: {list((sb.workspace / '.analyst-runtime').iterdir()) if (sb.workspace / '.analyst-runtime').exists() else 'no .analyst-runtime dir'}"
     )
 
     jobs_data = json.loads(jobs_file.read_text())

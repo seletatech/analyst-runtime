@@ -8,7 +8,7 @@ that Bedrock rejected:
 """
 from __future__ import annotations
 
-from nanobot.session.manager import Session
+from analyst_runtime.session.manager import Session
 
 
 def _make_tool_call(tc_id: str, name: str = "some_tool") -> dict:

@@ -2,18 +2,18 @@ from pathlib import Path
 
 import pytest
 
-from nanobot.agent.context import ContextBuilder
-from nanobot.agent.loop import AgentLoop
-from nanobot.agent.memory import MemoryStore
-from nanobot.agent.tools.filesystem import (
+from analyst_runtime.agent.context import ContextBuilder
+from analyst_runtime.agent.loop import AgentLoop
+from analyst_runtime.agent.memory import MemoryStore
+from analyst_runtime.agent.tools.filesystem import (
     AppendFileTool,
     EditFileTool,
     PatchFileTool,
     WriteFileTool,
 )
-from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.bus.queue import MessageBus
-from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from analyst_runtime.agent.tools.registry import ToolRegistry
+from analyst_runtime.bus.queue import MessageBus
+from analyst_runtime.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 
 
 @pytest.mark.parametrize(

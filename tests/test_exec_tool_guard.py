@@ -13,8 +13,8 @@ import sys
 
 import pytest
 
-from nanobot.agent.loop import AgentLoop
-from nanobot.agent.tools.shell import ExecTool
+from analyst_runtime.agent.loop import AgentLoop
+from analyst_runtime.agent.tools.shell import ExecTool
 
 
 @pytest.fixture()
@@ -99,11 +99,11 @@ def test_non_dumping_shell_setup_commands_pass(tool, command):
 async def test_exec_receives_only_non_secret_allowlisted_environment(tool, monkeypatch, tmp_path):
     monkeypatch.setenv("GATEWAY_JWT_TOKEN", "gateway-secret")
     monkeypatch.setenv("OPENAI_API_KEY", "provider-secret")
-    monkeypatch.setenv("NANOBOT_TEST_UNLISTED", "ordinary-parent-value")
+    monkeypatch.setenv("ANALYST_RUNTIME_TEST_UNLISTED", "ordinary-parent-value")
 
     result = await tool.execute(
         "printf 'path=%s\\nsecret=%s\\nprovider=%s\\nunlisted=%s\\nhome=%s\\ntmpdir=%s\\n' "
-        '"$PATH" "$GATEWAY_JWT_TOKEN" "$OPENAI_API_KEY" "$NANOBOT_TEST_UNLISTED" '
+        '"$PATH" "$GATEWAY_JWT_TOKEN" "$OPENAI_API_KEY" "$ANALYST_RUNTIME_TEST_UNLISTED" '
         '"$HOME" "$TMPDIR"'
     )
 

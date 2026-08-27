@@ -10,11 +10,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from nanobot.agent.loop import AgentLoop
-from nanobot.agent.tools.shell import ExecTool
-from nanobot.bus.events import InboundMessage, OutboundMessage
-from nanobot.bus.queue import MessageBus
-from nanobot.channels.web import WebChannel
+from analyst_runtime.agent.loop import AgentLoop
+from analyst_runtime.agent.tools.shell import ExecTool
+from analyst_runtime.bus.events import InboundMessage, OutboundMessage
+from analyst_runtime.bus.queue import MessageBus
+from analyst_runtime.channels.web import WebChannel
 
 
 @pytest.mark.asyncio
@@ -87,7 +87,7 @@ async def test_web_channel_routes_output_and_attachments_by_run_id(
             requests.append((url, kwargs))
             return FakeResponse()
 
-    monkeypatch.setattr("nanobot.channels.web.httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr("analyst_runtime.channels.web.httpx.AsyncClient", FakeAsyncClient)
     attachment = tmp_path / "result.csv"
     attachment.write_text("metric,value\nloss,12\n", encoding="utf-8")
     monkeypatch.setenv("WORKSPACE_PATH", str(tmp_path))
@@ -114,7 +114,7 @@ async def test_web_channel_routes_output_and_attachments_by_run_id(
 
     attachment_request = requests[0][1]
     outbound_request = requests[1][1]
-    assert attachment_request["headers"]["X-Nanobot-Run-Id"] == "run-123"
+    assert attachment_request["headers"]["X-Analyst Runtime-Run-Id"] == "run-123"
     assert outbound_request["json"]["session_id"] == "chat-run-123"
     assert outbound_request["json"]["run_id"] == "run-123"
     assert outbound_request["json"]["conversation_id"] == "conversation-456"

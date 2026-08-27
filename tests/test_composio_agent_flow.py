@@ -7,9 +7,9 @@ from types import MethodType
 import httpx
 import pytest
 
-from nanobot.agent.loop import AgentLoop
-from nanobot.bus.queue import MessageBus
-from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from analyst_runtime.agent.loop import AgentLoop
+from analyst_runtime.bus.queue import MessageBus
+from analyst_runtime.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 
 
 def _message_text(content: object) -> str:
@@ -664,7 +664,7 @@ async def test_agent_loop_uses_chat_sent_composio_key_to_write_local_credentials
 ) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    credentials_path = workspace / ".nanobot" / "composio" / "credentials.json"
+    credentials_path = workspace / ".analyst-runtime" / "composio" / "credentials.json"
 
     monkeypatch.setenv("OWNER_ID", "owner-123")
     monkeypatch.delenv("COMPOSIO_API_KEY", raising=False)

@@ -14,9 +14,9 @@ import asyncio
 
 import pytest
 
-from nanobot.bus.queue import MessageBus
-from nanobot.channels.telegram import TelegramChannel
-from nanobot.config.schema import TelegramConfig
+from analyst_runtime.bus.queue import MessageBus
+from analyst_runtime.channels.telegram import TelegramChannel
+from analyst_runtime.config.schema import TelegramConfig
 
 
 @pytest.fixture()

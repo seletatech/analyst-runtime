@@ -5,8 +5,8 @@ from typing import Any
 
 import pytest
 
-from nanobot.agent.tools import gateway_auth
-from nanobot.agent.tools import firecrawl
+from analyst_runtime.agent.tools import gateway_auth
+from analyst_runtime.agent.tools import firecrawl
 
 
 def test_gateway_client_does_not_inherit_desktop_proxy_settings(

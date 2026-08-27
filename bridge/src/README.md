@@ -11,7 +11,7 @@ This directory holds the implementation code for the bridge package. If the brid
 ## Dependency Notes
 - `api/` for gateway-authenticated tool access and sandbox lifecycle integration
 - `workspace/` for product-owned prompt, memory, and skill overlays
-- LLM or media providers declared under `nanobot/nanobot/providers/`
+- LLM or media providers declared under `analyst_runtime/analyst_runtime/providers/`
 - `docs/runbooks/` or product scripts when runtime behavior needs operator support
 
 ## Cleanup Guidance

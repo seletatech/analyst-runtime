@@ -16,10 +16,10 @@ from typing import Any
 
 import pytest
 
-from nanobot.agent.loop import AgentLoop
-from nanobot.bus.events import InboundMessage
-from nanobot.bus.queue import MessageBus
-from nanobot.providers.base import LLMProvider, LLMResponse
+from analyst_runtime.agent.loop import AgentLoop
+from analyst_runtime.bus.events import InboundMessage
+from analyst_runtime.bus.queue import MessageBus
+from analyst_runtime.providers.base import LLMProvider, LLMResponse
 
 
 class _CapturingProvider(LLMProvider):

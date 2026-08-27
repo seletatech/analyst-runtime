@@ -4,13 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from nanobot.agent.context import ContextBuilder
-from nanobot.profiles.manufacturing.memory import (
+from analyst_runtime.agent.context import ContextBuilder
+from analyst_runtime.profiles.manufacturing.memory import (
     CONFIRMED_SEMANTICS_END,
     CONFIRMED_SEMANTICS_START,
 )
-from nanobot.profiles.runtime import RuntimeProfiles
-from nanobot.workspace import WorkspaceConfiguration
+from analyst_runtime.profiles.runtime import RuntimeProfiles
+from analyst_runtime.workspace import WorkspaceConfiguration
 
 TEMPLATES = Path(__file__).resolve().parents[1] / "workspaces"
 

@@ -1,9 +1,9 @@
 from pathlib import Path
 
-from nanobot.agent.context import ContextBuilder
-from nanobot.agent.loop import AgentLoop
-from nanobot.bus.events import InboundMessage
-from nanobot.workspace import WorkspaceConfiguration
+from analyst_runtime.agent.context import ContextBuilder
+from analyst_runtime.agent.loop import AgentLoop
+from analyst_runtime.bus.events import InboundMessage
+from analyst_runtime.workspace import WorkspaceConfiguration
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE = ROOT / "workspace"

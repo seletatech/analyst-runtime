@@ -6,10 +6,10 @@ from typing import Any
 
 import pytest
 
-from nanobot.agent.loop import AgentLoop
-from nanobot.agent.tools.base import Tool
-from nanobot.bus.queue import MessageBus
-from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from analyst_runtime.agent.loop import AgentLoop
+from analyst_runtime.agent.tools.base import Tool
+from analyst_runtime.bus.queue import MessageBus
+from analyst_runtime.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 
 
 class _ToolThenAnswerProvider(LLMProvider):

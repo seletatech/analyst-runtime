@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from nanobot.heartbeat.service import (
+from analyst_runtime.heartbeat.service import (
     DEFAULT_HEARTBEAT_INTERVAL_S,
     HEARTBEAT_OK_TOKEN,
     HEARTBEAT_PROMPT,

@@ -8,13 +8,13 @@ from typing import Any
 
 import pytest
 
-from nanobot.agent.loop import AgentLoop
-from nanobot.agent.tools.message import MessageTool
-from nanobot.bus.events import InboundMessage, OutboundMessage
-from nanobot.bus.queue import MessageBus
-from nanobot.config.schema import AgentDefaults
-from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
-from nanobot.providers.litellm_provider import LiteLLMProvider
+from analyst_runtime.agent.loop import AgentLoop
+from analyst_runtime.agent.tools.message import MessageTool
+from analyst_runtime.bus.events import InboundMessage, OutboundMessage
+from analyst_runtime.bus.queue import MessageBus
+from analyst_runtime.config.schema import AgentDefaults
+from analyst_runtime.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from analyst_runtime.providers.litellm_provider import LiteLLMProvider
 
 
 class _SequenceProvider(LLMProvider):
@@ -138,10 +138,10 @@ async def test_tool_iteration_exhaustion_returns_support_error_code(
 
     assert response is not None
     assert response.content == (
-        "分析未完成。Error Code: NANOBOT-ITERATION-001。"
+        "分析未完成。Error Code: ANALYST-RUNTIME-ITERATION-001。"
         "请将此错误码提供给技术支持。"
     )
-    assert response.metadata["error_code"] == "NANOBOT-ITERATION-001"
+    assert response.metadata["error_code"] == "ANALYST-RUNTIME-ITERATION-001"
 
 
 @pytest.mark.asyncio
@@ -169,8 +169,8 @@ async def test_tool_protocol_abort_is_not_mislabeled_as_iteration_exhaustion(
     response = await agent._process_message(_message("malformed-tools"))
 
     assert response is not None
-    assert response.metadata["error_code"] == "NANOBOT-PROTOCOL-001"
-    assert "NANOBOT-ITERATION-001" not in response.content
+    assert response.metadata["error_code"] == "ANALYST-RUNTIME-PROTOCOL-001"
+    assert "ANALYST-RUNTIME-ITERATION-001" not in response.content
 
 
 @pytest.mark.asyncio

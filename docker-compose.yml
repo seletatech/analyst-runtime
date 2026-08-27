@@ -1,13 +1,13 @@
 x-common-config: &common-config
   build:
     context: ..
-    dockerfile: nanobot/Dockerfile
+    dockerfile: analyst-runtime/Dockerfile
   volumes:
-    - ~/.nanobot:/root/.nanobot
+    - ~/.analyst-runtime:/root/.analyst-runtime
 
 services:
-  nanobot-gateway:
-    container_name: nanobot-gateway
+  analyst-runtime-gateway:
+    container_name: analyst-runtime-gateway
     <<: *common-config
     command: ["gateway"]
     restart: unless-stopped
@@ -22,7 +22,7 @@ services:
           cpus: '0.25'
           memory: 256M
   
-  nanobot-cli:
+  analyst-runtime-cli:
     <<: *common-config
     profiles:
       - cli

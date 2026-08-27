@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from nanobot.agent.tools.notion import NotionTool
+from analyst_runtime.agent.tools.notion import NotionTool
 
 
 _AUTHORIZED_TOKEN_PAYLOAD = {
@@ -36,7 +36,7 @@ def _make_tool() -> NotionTool:
 async def test_notion_check_auth_returns_auth_required() -> None:
     tool = _make_tool()
     with patch(
-        "nanobot.agent.tools.notion.get_oauth_token",
+        "analyst_runtime.agent.tools.notion.get_oauth_token",
         new_callable=AsyncMock,
         return_value=_AUTH_REQUIRED_PAYLOAD,
     ):
@@ -49,7 +49,7 @@ async def test_notion_check_auth_returns_auth_required() -> None:
 async def test_notion_execute_returns_auth_required_when_no_token() -> None:
     tool = _make_tool()
     with patch(
-        "nanobot.agent.tools.notion.get_oauth_token",
+        "analyst_runtime.agent.tools.notion.get_oauth_token",
         new_callable=AsyncMock,
         return_value=_AUTH_REQUIRED_PAYLOAD,
     ):
@@ -100,7 +100,7 @@ async def test_notion_search_success(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
 
     with patch(
-        "nanobot.agent.tools.notion.get_oauth_token",
+        "analyst_runtime.agent.tools.notion.get_oauth_token",
         new_callable=AsyncMock,
         return_value=_AUTHORIZED_TOKEN_PAYLOAD,
     ):
@@ -151,7 +151,7 @@ async def test_notion_read_page_success(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
 
     with patch(
-        "nanobot.agent.tools.notion.get_oauth_token",
+        "analyst_runtime.agent.tools.notion.get_oauth_token",
         new_callable=AsyncMock,
         return_value=_AUTHORIZED_TOKEN_PAYLOAD,
     ):
@@ -189,7 +189,7 @@ async def test_notion_create_page_success(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
 
     with patch(
-        "nanobot.agent.tools.notion.get_oauth_token",
+        "analyst_runtime.agent.tools.notion.get_oauth_token",
         new_callable=AsyncMock,
         return_value=_AUTHORIZED_TOKEN_PAYLOAD,
     ):
@@ -228,7 +228,7 @@ async def test_notion_append_block_success(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
 
     with patch(
-        "nanobot.agent.tools.notion.get_oauth_token",
+        "analyst_runtime.agent.tools.notion.get_oauth_token",
         new_callable=AsyncMock,
         return_value=_AUTHORIZED_TOKEN_PAYLOAD,
     ):

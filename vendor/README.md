@@ -1,4 +1,4 @@
-# NanoBot release wheelhouse
+# Analyst Runtime release wheelhouse
 
 This directory is a release-time deployment cache for the Linux CPython 3.12
 wheels locked by `../uv.lock`. Wheel binaries are intentionally ignored by

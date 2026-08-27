@@ -8,8 +8,8 @@ from typing import Any
 
 import pytest
 
-from nanobot.agent.tools.base import Tool
-from nanobot.agent.tools.registry import ToolRegistry
+from analyst_runtime.agent.tools.base import Tool
+from analyst_runtime.agent.tools.registry import ToolRegistry
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +144,7 @@ async def test_execute_exception_masks_secrets(monkeypatch: pytest.MonkeyPatch) 
 
 @pytest.mark.asyncio
 async def test_execute_timeout_returns_timeout_message(monkeypatch: pytest.MonkeyPatch) -> None:
-    import nanobot.agent.tools.registry as reg_module
+    import analyst_runtime.agent.tools.registry as reg_module
     monkeypatch.setattr(reg_module, "_DEFAULT_TOOL_TIMEOUT", 0.01)  # 10ms
 
     registry = ToolRegistry()

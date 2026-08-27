@@ -1,8 +1,8 @@
-ARG NANOBOT_BASE_IMAGE=ghcr.io/astral-sh/uv:python3.12-bookworm-slim
-FROM ${NANOBOT_BASE_IMAGE}
+ARG ANALYST_RUNTIME_BASE_IMAGE=ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+FROM ${ANALYST_RUNTIME_BASE_IMAGE}
 
 ARG FIRECRAWL_CLI_VERSION=1.9.8
-ARG NANOBOT_VERSION=dev
+ARG ANALYST_RUNTIME_VERSION=dev
 # Pin gws so the musl-binary fetch URL is deterministic. Bump this when upgrading gws.
 ARG GWS_CLI_VERSION=0.22.5
 
@@ -52,14 +52,14 @@ RUN apt-get update && \
 WORKDIR /app
 
 # Install Python dependencies first (cached layer)
-COPY nanobot/pyproject.toml nanobot/README.md nanobot/LICENSE ./
-RUN mkdir -p nanobot bridge && touch nanobot/__init__.py && \
+COPY analyst-runtime/pyproject.toml analyst-runtime/README.md analyst-runtime/LICENSE ./
+RUN mkdir -p analyst_runtime bridge && touch analyst_runtime/__init__.py && \
     uv pip install --system --no-cache . && \
-    rm -rf nanobot bridge
+    rm -rf analyst_runtime bridge
 
 # Copy the full source and install
-COPY nanobot/nanobot/ nanobot/
-COPY nanobot/bridge/ bridge/
+COPY analyst-runtime/analyst_runtime/ analyst_runtime/
+COPY analyst-runtime/bridge/ bridge/
 COPY workspace/ /app/workspace/
 RUN uv pip install --system --no-cache .
 
@@ -69,20 +69,20 @@ RUN npm install && npm run build
 WORKDIR /app
 
 # Create config directory
-RUN mkdir -p /root/.nanobot
+RUN mkdir -p /root/.analyst-runtime
 
 # Workspace volume mount point for sandbox containers
 RUN mkdir -p /workspace
 
 ENV WORKSPACE_PATH=/workspace
 ENV SANDBOX_ID=default
-ENV NANOBOT_VERSION=$NANOBOT_VERSION
+ENV ANALYST_RUNTIME_VERSION=$ANALYST_RUNTIME_VERSION
 # Chromium --no-sandbox required when running as root in Docker/ECS containers
 ENV AGENT_BROWSER_CHROMIUM_FLAGS="--no-sandbox --disable-setuid-sandbox"
 # On ARM64 (Apple Silicon dev), Chrome for Testing is unavailable; use system chromium
 ENV AGENT_BROWSER_EXECUTABLE_PATH="/usr/bin/chromium"
 # gws (Google Workspace CLI) — store OAuth credentials on EFS so they survive container restarts
-ENV GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=/workspace/.nanobot/oauth/gws/credentials.json
+ENV GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=/workspace/.analyst-runtime/oauth/gws/credentials.json
 
-ENTRYPOINT ["nanobot"]
+ENTRYPOINT ["analyst-runtime"]
 CMD ["sandbox"]

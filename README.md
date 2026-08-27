@@ -1,42 +1,47 @@
-# Nanobot Runtime
+# Analyst Runtime
 
-`nanobot/` contains the lightweight agent runtime used by the gateway to power per-user sandboxes.
+Analyst Runtime is our private, product-neutral agent execution engine for
+enterprise applications. It owns model routing, tool execution, conversation
+state, workspace prompts, optional runtime profiles, and authenticated product
+gateway integration.
 
-This repository carries the integrated runtime used in production, not just a standalone demo package.
+The public integration name is **Analyst Runtime**. The Python package is
+`analyst_runtime`, the command is `analyst-runtime`, and product-specific
+identity and behavior live in a supplied workspace rather than in the core.
 
-## Run Locally
+## Origin and attribution
+
+Analyst Runtime began as a deeply modified derivative of
+[HKUDS/nanobot](https://github.com/HKUDS/nanobot), an open-source,
+self-hosted personal AI agent framework. We are grateful to the NanoBot
+maintainers and contributors for the original architecture and implementation.
+
+This repository preserves the original MIT license and copyright notice. It is
+an independently maintained private derivative and is not affiliated with or
+endorsed by the NanoBot project.
+
+## Runtime boundary
+
+- `analyst_runtime/` contains the generic Python runtime.
+- `workspaces/` contains copyable product prompt and runtime-profile templates.
+- `bridge/` contains optional channel bridges.
+- `tests/` contains the runtime contract and regression suite.
+
+The active product workspace is supplied by the consuming repository. Its
+`SOUL.md` defines who the agent is, `AGENTS.md` defines how it works, and
+`workspace.json` selects optional runtime capabilities. Runtime state, customer
+data, prompts, and artifacts do not belong in this repository.
+
+## Development
 
 ```bash
 uv sync
 uv run pytest
 ```
 
-From the repository root, build the runtime image with the product workspace:
+Build from a consuming repository whose root contains both `analyst-runtime/`
+and `workspace/`:
 
 ```bash
-docker build -f nanobot/Dockerfile -t mesu/nanobot:latest .
+docker build -f analyst-runtime/Dockerfile -t analyst-runtime:latest .
 ```
-
-After changing runtime code that is baked into sandbox images, use:
-
-```bash
-./scripts/samantha/local/rebuild-nanobot-and-upgrade.sh
-```
-
-## Key Directories
-
-- `nanobot/` - core runtime package
-- [`workspaces/`](workspaces/) - copyable product prompt and runtime-profile templates
-- `tests/` - automated tests
-- [`../workspace/`](../workspace/) - product-owned sandbox prompt, data, and runtime state
-- `bridge/` - TypeScript bridge package
-
-The active workspace builds the system prompt in layers: NanoBot's generic
-runtime prompt, then `SOUL.md` (who the agent is), then `AGENTS.md` (how it
-works). Optional domain behavior is selected by `workspace.json`; an absent or
-empty `runtime_profiles` list leaves the generic runtime unchanged.
-
-## Related Directories
-
-- [`api/`](../api/)
-- [`scripts/samantha/local/rebuild-nanobot-and-upgrade.sh`](../scripts/samantha/local/rebuild-nanobot-and-upgrade.sh)

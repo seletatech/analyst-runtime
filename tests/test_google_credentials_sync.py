@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-import nanobot.cli.commands as commands
+import analyst_runtime.cli.commands as commands
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +82,7 @@ def test_sync_writes_credentials_when_authorized(
         workspace=tmp_path,
     )
 
-    creds_path = tmp_path / ".nanobot" / "oauth" / "gws" / "credentials.json"
+    creds_path = tmp_path / ".analyst-runtime" / "oauth" / "gws" / "credentials.json"
     assert creds_path.exists(), "credentials.json should be written"
     written = json.loads(creds_path.read_text())
     assert written == VALID_CREDS
@@ -103,7 +103,7 @@ def test_sync_skips_when_not_authorized(
         workspace=tmp_path,
     )
 
-    creds_path = tmp_path / ".nanobot" / "oauth" / "gws" / "credentials.json"
+    creds_path = tmp_path / ".analyst-runtime" / "oauth" / "gws" / "credentials.json"
     assert not creds_path.exists(), "credentials.json should NOT be written for new user"
 
 
@@ -123,7 +123,7 @@ def test_sync_skips_on_network_error(
         workspace=tmp_path,
     )
 
-    creds_path = tmp_path / ".nanobot" / "oauth" / "gws" / "credentials.json"
+    creds_path = tmp_path / ".analyst-runtime" / "oauth" / "gws" / "credentials.json"
     assert not creds_path.exists()
 
 
@@ -143,7 +143,7 @@ def test_sync_skips_when_response_missing_refresh_token(
         workspace=tmp_path,
     )
 
-    creds_path = tmp_path / ".nanobot" / "oauth" / "gws" / "credentials.json"
+    creds_path = tmp_path / ".analyst-runtime" / "oauth" / "gws" / "credentials.json"
     assert not creds_path.exists(), "incomplete creds must not be written"
 
 
@@ -152,7 +152,7 @@ def test_sync_overwrites_stale_credentials(
 ) -> None:
     """Each startup overwrites the file — keeps creds in sync with Supabase (Option B)."""
     stale = {**VALID_CREDS, "refresh_token": "old-token"}
-    creds_path = tmp_path / ".nanobot" / "oauth" / "gws" / "credentials.json"
+    creds_path = tmp_path / ".analyst-runtime" / "oauth" / "gws" / "credentials.json"
     creds_path.parent.mkdir(parents=True)
     creds_path.write_text(json.dumps(stale))
 

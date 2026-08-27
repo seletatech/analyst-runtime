@@ -1,11 +1,11 @@
 [project]
-name = "nanobot-ai"
+name = "analyst-runtime"
 version = "0.1.4"
-description = "A lightweight personal AI assistant framework"
+description = "Private product-neutral agent execution runtime"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
-    {name = "nanobot contributors"}
+    {name = "Analyst Runtime contributors"}
 ]
 keywords = ["ai", "agent", "chatbot"]
 classifiers = [
@@ -59,36 +59,36 @@ dev = [
 ]
 
 [project.scripts]
-nanobot = "nanobot.cli.commands:app"
+analyst-runtime = "analyst_runtime.cli.commands:app"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["nanobot"]
+packages = ["analyst_runtime"]
 
 [tool.hatch.build.targets.wheel.sources]
-"nanobot" = "nanobot"
+"analyst_runtime" = "analyst_runtime"
 
 # Include non-Python files in skills and workspace templates
 [tool.hatch.build]
 include = [
-    "nanobot/**/*.py",
-    "nanobot/skills/**/*.md",
-    "nanobot/skills/**/*.sh",
+    "analyst_runtime/**/*.py",
+    "analyst_runtime/skills/**/*.md",
+    "analyst_runtime/skills/**/*.sh",
 ]
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "nanobot/",
+    "analyst_runtime/",
     "bridge/",
     "README.md",
     "LICENSE",
 ]
 
 [tool.hatch.build.targets.wheel.force-include]
-"bridge" = "nanobot/bridge"
+"bridge" = "analyst_runtime/bridge"
 
 [tool.ruff]
 line-length = 100
@@ -102,5 +102,5 @@ ignore = ["E501"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
-    "e2e: staging end-to-end tests (require running nanobot sandbox)",
+    "e2e: staging end-to-end tests (require a running Analyst Runtime sandbox)",
 ]
