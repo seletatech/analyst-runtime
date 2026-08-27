@@ -1,0 +1,57 @@
+ARG NANOBOT_BASE_IMAGE=ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+FROM ${NANOBOT_BASE_IMAGE}
+
+ARG NANOBOT_VERSION=dev
+ARG NANOBOT_INSTALL_DEPENDENCIES=1
+
+# The internal MVP only runs Nanobot's HTTP-polling sandbox. WhatsApp, browser
+# automation, Google Workspace and media tools are deliberately excluded from
+# this image to reduce build time and production attack surface.
+WORKDIR /app
+
+COPY nanobot/pyproject.toml nanobot/uv.lock nanobot/README.md nanobot/LICENSE ./
+COPY nanobot/vendor/ /opt/nanobot-wheels/
+RUN uv export \
+      --locked \
+      --no-dev \
+      --format requirements-txt \
+      --no-emit-project \
+      --output-file /tmp/nanobot-requirements.txt \
+    && if [ "$NANOBOT_INSTALL_DEPENDENCIES" = "1" ]; then \
+         find /opt/nanobot-wheels -maxdepth 1 -name '*.whl' -print -quit | grep -q . \
+           || { echo 'NanoBot release wheelhouse is missing'; exit 1; }; \
+         uv pip install \
+           --system \
+           --offline \
+           --no-index \
+           --find-links /opt/nanobot-wheels \
+           --require-hashes \
+           --no-cache \
+           -r /tmp/nanobot-requirements.txt; \
+       fi
+
+COPY nanobot/nanobot/ nanobot/
+RUN mkdir -p bridge /root/.nanobot
+
+# Production prompts and skills are image content, so the validated image ID
+# also identifies the exact instruction tree. Generated workspace state is
+# excluded by .dockerignore and supplied by scoped runtime volumes instead.
+COPY workspace/ /app/workspace/
+RUN mkdir -p \
+      /app/workspace/.nanobot \
+      /app/workspace/.nanobot/cron \
+      /app/workspace/.nanobot/oauth \
+      /app/workspace/.nanobot/composio \
+      /app/workspace/sessions \
+      /app/workspace/memory \
+      /app/workspace/tmp_analysis \
+      /app/workspace/artifacts \
+    && ln -s /app/workspace /workspace
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV WORKSPACE_PATH=/app/workspace
+ENV SANDBOX_ID=default
+ENV NANOBOT_VERSION=${NANOBOT_VERSION}
+
+ENTRYPOINT ["python", "-m", "nanobot"]
+CMD ["sandbox"]

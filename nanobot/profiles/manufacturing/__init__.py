@@ -1,0 +1,1 @@
+"""Manufacturing-semantics runtime profile."""
