@@ -1,4 +1,6 @@
-ARG ANALYST_RUNTIME_BASE_IMAGE=ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+# Keep the production sandbox on a minimal musl base. The digest is deliberately
+# pinned so downstream releases cannot silently inherit a rebuilt base image.
+ARG ANALYST_RUNTIME_BASE_IMAGE=ghcr.io/astral-sh/uv:python3.12-alpine@sha256:e2156509b8592cb4a74d73ba068fd45c95ec571333effc819f3ac25101147fb1
 FROM ${ANALYST_RUNTIME_BASE_IMAGE}
 
 ARG ANALYST_RUNTIME_VERSION=dev

@@ -48,3 +48,4 @@ tests/e2e/results/
 !tests/test_tool_result_history.py
 !tests/test_malformed_tool_call_resilience.py
 !tests/test_composio_agent_flow.py
+!tests/test_release_container.py
