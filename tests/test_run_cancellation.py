@@ -109,6 +109,7 @@ async def test_web_channel_routes_output_and_attachments_by_run_id(
             conversation_id="conversation-456",
             media=[str(attachment)],
             run_id="run-123",
+            event_id="event-final-123",
         )
     )
 
@@ -118,6 +119,34 @@ async def test_web_channel_routes_output_and_attachments_by_run_id(
     assert outbound_request["json"]["session_id"] == "chat-run-123"
     assert outbound_request["json"]["run_id"] == "run-123"
     assert outbound_request["json"]["conversation_id"] == "conversation-456"
+    assert outbound_request["json"]["event_id"] == "event-final-123"
+
+
+@pytest.mark.asyncio
+async def test_web_channel_deduplicates_a_redelivered_stable_request() -> None:
+    bus = MagicMock()
+    bus.publish_inbound = AsyncMock()
+    channel = WebChannel(
+        MagicMock(
+            allow_from=["*"],
+            sandbox_id="test-sandbox",
+            gateway_url="http://gateway",
+        ),
+        bus,
+    )
+    payload = {
+        "type": "user_message",
+        "request_id": "run:run-123",
+        "session_id": "chat-run-123",
+        "run_id": "run-123",
+        "conversation_id": "conversation-456",
+        "content": "检查设备",
+    }
+
+    await channel._process_inbound(payload)
+    await channel._process_inbound(payload)
+
+    bus.publish_inbound.assert_awaited_once()
 
 
 @pytest.mark.asyncio
