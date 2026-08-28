@@ -1,6 +1,6 @@
 # Runtime profiles
 
-<!-- heineda-nav
+<!-- project-nav
 {"entrypoints":["__init__.py","runtime.py","types.py"],"owners":[],"truth":{},"production":"analyst-runtime-image"}
 -->
 

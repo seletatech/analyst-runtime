@@ -1,6 +1,6 @@
 # Analyst Runtime release wheelhouse
 
-<!-- heineda-nav
+<!-- project-nav
 {"entrypoints":[],"owners":[],"truth":{},"production":"analyst-runtime-image"}
 -->
 

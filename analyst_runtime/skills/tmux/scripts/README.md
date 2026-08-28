@@ -1,6 +1,6 @@
 # scripts skill
 
-<!-- heineda-nav
+<!-- project-nav
 {"entrypoints":["find-sessions.sh","wait-for-text.sh"],"owners":[],"truth":{},"production":"analyst-runtime-image"}
 -->
 

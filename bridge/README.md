@@ -1,6 +1,6 @@
 # Bridge Package
 
-<!-- heineda-nav
+<!-- project-nav
 {"entrypoints":["package.json","tsconfig.json"],"owners":[],"truth":{},"production":"analyst-runtime-image"}
 -->
 

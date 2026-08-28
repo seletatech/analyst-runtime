@@ -1,6 +1,6 @@
 # Utils
 
-<!-- heineda-nav
+<!-- project-nav
 {"entrypoints":["__init__.py","helpers.py","tool_calls.py"],"owners":[],"truth":{},"production":"analyst-runtime-image"}
 -->
 

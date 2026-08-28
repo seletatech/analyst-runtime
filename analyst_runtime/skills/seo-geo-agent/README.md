@@ -1,6 +1,6 @@
 # seo-geo-agent skill
 
-<!-- heineda-nav
+<!-- project-nav
 {"entrypoints":["SKILL.md"],"owners":[],"truth":{},"production":"analyst-runtime-image"}
 -->
 

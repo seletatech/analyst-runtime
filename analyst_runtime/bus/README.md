@@ -1,6 +1,6 @@
 # Bus
 
-<!-- heineda-nav
+<!-- project-nav
 {"entrypoints":["__init__.py","delivery.py","events.py","queue.py"],"owners":[],"truth":{},"production":"analyst-runtime-image"}
 -->
 

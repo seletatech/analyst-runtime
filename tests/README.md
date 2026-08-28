@@ -1,6 +1,6 @@
 # Runtime tests
 
-<!-- heineda-nav
+<!-- project-nav
 {"entrypoints":["test_adapter_registry.py","test_agent_loop_runtime.py","test_composio_agent_flow.py","test_cron_service.py","test_duplicate_message_in_context.py"],"owners":[],"truth":{},"production":"test-only"}
 -->
 

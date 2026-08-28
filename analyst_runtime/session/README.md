@@ -1,6 +1,6 @@
 # Session
 
-<!-- heineda-nav
+<!-- project-nav
 {"entrypoints":["__init__.py","manager.py"],"owners":[],"truth":{},"production":"analyst-runtime-image"}
 -->
 

@@ -1,6 +1,6 @@
 # Runtime tools
 
-<!-- heineda-nav
+<!-- project-nav
 {"entrypoints":["__init__.py","adapters.yaml","analyze_image_tool.py","base.py","composio.py"],"owners":[],"truth":{},"production":"analyst-runtime-image"}
 -->
 

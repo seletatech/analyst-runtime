@@ -1,6 +1,6 @@
 # Heartbeat
 
-<!-- heineda-nav
+<!-- project-nav
 {"entrypoints":["__init__.py","service.py"],"owners":[],"truth":{},"production":"analyst-runtime-image"}
 -->
 

@@ -1,6 +1,6 @@
 # Config
 
-<!-- heineda-nav
+<!-- project-nav
 {"entrypoints":["__init__.py","loader.py","schema.py"],"owners":[],"truth":{},"production":"analyst-runtime-image"}
 -->
 

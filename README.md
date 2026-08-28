@@ -1,6 +1,6 @@
 # Analyst Runtime
 
-<!-- heineda-nav
+<!-- project-nav
 {"entrypoints":["Dockerfile","docker-compose.yml","pyproject.toml","uv.lock",".gitignore"],"owners":[],"truth":{},"production":"analyst-runtime-image"}
 -->
 

@@ -1,6 +1,6 @@
 # Analyst Runtime Runtime Package
 
-<!-- heineda-nav
+<!-- project-nav
 {"entrypoints":["__main__.py","__init__.py","workspace.py"],"owners":[],"truth":{},"production":"analyst-runtime-image"}
 -->
 

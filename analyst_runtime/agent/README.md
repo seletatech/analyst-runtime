@@ -1,6 +1,6 @@
 # Agent
 
-<!-- heineda-nav
+<!-- project-nav
 {"entrypoints":["__init__.py","context.py","loop.py","memory.py","skills.py"],"owners":[],"truth":{},"production":"analyst-runtime-image"}
 -->
 

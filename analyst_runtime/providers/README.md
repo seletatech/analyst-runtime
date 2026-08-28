@@ -1,6 +1,6 @@
 # Providers
 
-<!-- heineda-nav
+<!-- project-nav
 {"entrypoints":["__init__.py","base.py","custom_provider.py","litellm_provider.py","openai_codex_provider.py"],"owners":[],"truth":{},"production":"analyst-runtime-image"}
 -->
 

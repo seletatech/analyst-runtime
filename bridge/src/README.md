@@ -1,6 +1,6 @@
 # Bridge Source
 
-<!-- heineda-nav
+<!-- project-nav
 {"entrypoints":["index.ts","types.d.ts","server.ts","whatsapp.ts"],"owners":[],"truth":{},"production":"analyst-runtime-image"}
 -->
 

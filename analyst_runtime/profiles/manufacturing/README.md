@@ -1,6 +1,6 @@
 # Runtime manufacturing
 
-<!-- heineda-nav
+<!-- project-nav
 {"entrypoints":["__init__.py","intents.py","memory.py","profile.py","tools.py"],"owners":[],"truth":{},"production":"analyst-runtime-image"}
 -->
 

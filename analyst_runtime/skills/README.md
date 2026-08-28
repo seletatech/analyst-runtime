@@ -1,6 +1,6 @@
 # analyst_runtime Skills
 
-<!-- heineda-nav
+<!-- project-nav
 {"entrypoints":[],"owners":[],"truth":{},"production":"analyst-runtime-image"}
 -->
 

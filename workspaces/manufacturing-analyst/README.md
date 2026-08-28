@@ -1,6 +1,6 @@
 # manufacturing-analyst workspace
 
-<!-- heineda-nav
+<!-- project-nav
 {"entrypoints":["AGENTS.md","SOUL.md","workspace.json"],"owners":[],"truth":{},"production":"analyst-runtime-image"}
 -->
 

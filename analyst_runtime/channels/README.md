@@ -1,6 +1,6 @@
 # Channels
 
-<!-- heineda-nav
+<!-- project-nav
 {"entrypoints":["__init__.py","base.py","dingtalk.py","discord.py","email.py"],"owners":[],"truth":{},"production":"analyst-runtime-image"}
 -->
 

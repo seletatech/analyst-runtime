@@ -1,6 +1,6 @@
 # E2E Test Protocol
 
-<!-- heineda-nav
+<!-- project-nav
 {"entrypoints":["test_cron_reminder.py","test_email_calendar.py","test_exec_commands.py","test_investor_research.py","test_local_discovery.py"],"owners":[],"truth":{},"production":"test-only"}
 -->
 

@@ -1,6 +1,6 @@
 # Cron
 
-<!-- heineda-nav
+<!-- project-nav
 {"entrypoints":["__init__.py","service.py","types.py"],"owners":[],"truth":{},"production":"analyst-runtime-image"}
 -->
 

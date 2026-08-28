@@ -1,6 +1,6 @@
 # Cli
 
-<!-- heineda-nav
+<!-- project-nav
 {"entrypoints":["__init__.py","commands.py"],"owners":[],"truth":{},"production":"analyst-runtime-image"}
 -->
 
