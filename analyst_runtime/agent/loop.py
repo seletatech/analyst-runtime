@@ -208,6 +208,7 @@ class AgentLoop:
         self._active_message_tasks: dict[str, asyncio.Task] = {}
         self._message_queues: dict[str, asyncio.Queue[InboundMessage]] = {}
         self._steer_queues: dict[str, asyncio.Queue[InboundMessage]] = {}
+        self._pending_steer_ids: set[str] = set()
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._message_semaphore = asyncio.Semaphore(self.max_concurrent_messages)
         self._pending_cancellations: set[str] = set()
@@ -1345,6 +1346,13 @@ class AgentLoop:
         if not steers:
             return None
 
+        unapplied = [steer for steer in steers if not self._steer_was_applied(steer)]
+        if not unapplied:
+            for steer in steers:
+                self._pending_steer_ids.discard(str(steer.metadata.get("steer_id") or ""))
+                await self._publish_steer_acknowledgement(steer, applied=True)
+            return messages
+
         updated = messages
         if preceding_assistant:
             updated = self.context.add_assistant_message(
@@ -1352,7 +1360,9 @@ class AgentLoop:
                 preceding_assistant,
                 None,
             )
-        combined = "\n\n".join(steer.content.strip() for steer in steers if steer.content.strip())
+        combined = "\n\n".join(
+            steer.content.strip() for steer in unapplied if steer.content.strip()
+        )
         updated.append(
             {
                 "role": "user",
@@ -1363,33 +1373,57 @@ class AgentLoop:
             }
         )
         if session:
-            for steer in steers:
+            applied_ids = list(session.metadata.get("applied_steer_ids") or [])
+            for steer in unapplied:
+                steer_id = str(steer.metadata.get("steer_id") or "")
                 session.add_event(
                     {
                         "uuid": str(uuid.uuid4()),
                         "parent_uuid": parent_uuid,
                         "type": "user_input",
                         "steer": True,
+                        "steer_id": steer_id,
                         "content": steer.content,
                         "channel": steer.channel,
                         "chat_id": steer.chat_id,
                     }
                 )
+                if steer_id and steer_id not in applied_ids:
+                    applied_ids.append(steer_id)
+            session.metadata["applied_steer_ids"] = applied_ids[-512:]
+            # Persist the idempotency record before acknowledging the command.
+            self.sessions.save(session)
         for steer in steers:
-            await self.bus.publish_outbound(
-                OutboundMessage(
-                    channel=steer.channel,
-                    chat_id=steer.chat_id,
-                    content="",
-                    run_id=steer.run_id,
-                    conversation_id=steer.conversation_id,
-                    metadata={
-                        "control": "steer_applied",
-                        "steer_id": steer.metadata.get("steer_id"),
-                    },
-                )
-            )
+            self._pending_steer_ids.discard(str(steer.metadata.get("steer_id") or ""))
+            await self._publish_steer_acknowledgement(steer, applied=True)
         return updated
+
+    def _steer_was_applied(self, steer: InboundMessage) -> bool:
+        steer_id = str(steer.metadata.get("steer_id") or "")
+        if not steer_id:
+            return False
+        session = self.sessions.get_or_create(steer.session_key)
+        return steer_id in set(session.metadata.get("applied_steer_ids") or [])
+
+    async def _publish_steer_acknowledgement(
+        self,
+        steer: InboundMessage,
+        *,
+        applied: bool,
+    ) -> None:
+        await self.bus.publish_outbound(
+            OutboundMessage(
+                channel=steer.channel,
+                chat_id=steer.chat_id,
+                content="",
+                run_id=steer.run_id,
+                conversation_id=steer.conversation_id,
+                metadata={
+                    "control": "steer_applied" if applied else "steer_rejected",
+                    "steer_id": steer.metadata.get("steer_id"),
+                },
+            )
+        )
 
     async def _reject_pending_steers(self, execution_key: str) -> None:
         queue = self._steer_queues.pop(execution_key, None)
@@ -1398,6 +1432,7 @@ class AgentLoop:
         while not queue.empty():
             steer = queue.get_nowait()
             queue.task_done()
+            self._pending_steer_ids.discard(str(steer.metadata.get("steer_id") or ""))
             await self.bus.publish_outbound(
                 OutboundMessage(
                     channel=steer.channel,
@@ -1554,8 +1589,29 @@ class AgentLoop:
                     continue
 
                 if msg.metadata.get("control") == "steer":
+                    if self._steer_was_applied(msg):
+                        await self._publish_steer_acknowledgement(msg, applied=True)
+                        continue
+                    steer_id = str(msg.metadata.get("steer_id") or "")
+                    if steer_id and steer_id in self._pending_steer_ids:
+                        await self.bus.publish_outbound(
+                            OutboundMessage(
+                                channel=msg.channel,
+                                chat_id=msg.chat_id,
+                                content="",
+                                run_id=msg.run_id,
+                                conversation_id=msg.conversation_id,
+                                metadata={
+                                    "control": "steer_pending",
+                                    "steer_id": steer_id,
+                                },
+                            )
+                        )
+                        continue
                     message_task = self._active_message_tasks.get(execution_key)
                     if message_task and not message_task.done() and msg.content.strip():
+                        if steer_id:
+                            self._pending_steer_ids.add(steer_id)
                         self._steer_queues.setdefault(execution_key, asyncio.Queue()).put_nowait(
                             msg
                         )
@@ -1573,6 +1629,28 @@ class AgentLoop:
                                 },
                             )
                         )
+                    continue
+
+                if msg.metadata.get("control") == "steer_status":
+                    steer_id = str(msg.metadata.get("steer_id") or "")
+                    if self._steer_was_applied(msg):
+                        await self._publish_steer_acknowledgement(msg, applied=True)
+                    elif steer_id in self._pending_steer_ids:
+                        await self.bus.publish_outbound(
+                            OutboundMessage(
+                                channel=msg.channel,
+                                chat_id=msg.chat_id,
+                                content="",
+                                run_id=msg.run_id,
+                                conversation_id=msg.conversation_id,
+                                metadata={
+                                    "control": "steer_pending",
+                                    "steer_id": steer_id,
+                                },
+                            )
+                        )
+                    else:
+                        await self._publish_steer_acknowledgement(msg, applied=False)
                     continue
 
                 queue = self._message_queues.setdefault(execution_key, asyncio.Queue())

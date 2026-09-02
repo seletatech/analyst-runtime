@@ -321,6 +321,41 @@ async def test_runtime_applies_steer_before_the_next_model_step(tmp_path: Path) 
     assert acknowledgement.metadata["steer_id"] == "steer-789"
 
 
+@pytest.mark.asyncio
+async def test_runtime_persists_steer_id_before_acknowledging_it(tmp_path: Path) -> None:
+    bus = MessageBus()
+    agent = AgentLoop(bus=bus, provider=_SequenceProvider([]), workspace=tmp_path)
+    execution_key = "web:run-123"
+    session = agent.sessions.get_or_create("web:conversation-456")
+    agent._steer_queues[execution_key] = asyncio.Queue()
+    steer = InboundMessage(
+        channel="web",
+        sender_id="chat-run-123",
+        chat_id="chat-run-123",
+        content="只看最近三个月",
+        run_id="run-123",
+        conversation_id="conversation-456",
+        metadata={"control": "steer", "steer_id": "steer-durable"},
+    )
+    agent._steer_queues[execution_key].put_nowait(steer)
+
+    updated = await agent._apply_pending_steers(
+        execution_key,
+        [{"role": "user", "content": "分析全年趋势"}],
+        session=session,
+        parent_uuid="request-1",
+    )
+
+    assert updated is not None
+    persisted = agent.sessions._load("web:conversation-456")
+    assert persisted is not None
+    assert "steer-durable" in persisted.metadata["applied_steer_ids"]
+    assert any(event.get("steer_id") == "steer-durable" for event in persisted.events)
+    assert agent._steer_was_applied(steer) is True
+    acknowledgement = await bus.consume_outbound()
+    assert acknowledgement.metadata["control"] == "steer_applied"
+
+
 def test_trusted_analysis_tool_profile_exposes_no_domain_tools_by_default(
     tmp_path: Path,
 ) -> None:

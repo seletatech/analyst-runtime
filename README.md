@@ -35,7 +35,10 @@ second agent loop.
 Run-scoped `steer_request` control messages are accepted only while that run is active. The
 Runtime queues the instruction and applies it after the current tool-call batch (or before a
 text-only response becomes final), persists it as user input, acknowledges `steer_applied`,
-and then continues the same agent loop. It never starts a parallel run for steering.
+and then continues the same agent loop. The session also persists a bounded set of applied
+`steer_id` values so retries and status lookups are idempotent after transport disconnects. It
+reports a received command as `pending` until the next safe boundary and never starts a parallel
+run for steering.
 
 Vercel AI SDK (`ai` and `@ai-sdk/*`) is forbidden in this repository, including the optional
 Node channel bridges. Python provider access remains behind `LLMProvider`; product model
