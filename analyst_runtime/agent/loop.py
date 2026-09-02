@@ -1379,7 +1379,9 @@ class AgentLoop:
                     },
                     {"role": "user", "content": compact_prompt},
                 ],
-                model=self.consolidation_model or model,
+                # Active-context compaction is part of the current billed run.
+                # Use the run model so its usage and price attribution remain exact.
+                model=model,
                 temperature=0,
                 max_tokens=self.max_tokens,
             )
@@ -1561,11 +1563,16 @@ class AgentLoop:
                 temp_session.events = events_to_archive
                 await self._consolidate_memory(temp_session, archive_all=True)
 
-            self._track_task(_consolidate_and_cleanup())
+            if self.tool_profile != "trusted-analysis":
+                self._track_task(_consolidate_and_cleanup())
             return OutboundMessage(
                 channel=msg.channel,
                 chat_id=msg.chat_id,
-                content="New session started. Memory consolidation in progress.",
+                content=(
+                    "New session started."
+                    if self.tool_profile == "trusted-analysis"
+                    else "New session started. Memory consolidation in progress."
+                ),
             )
         if cmd == "/help":
             return OutboundMessage(
@@ -1683,7 +1690,12 @@ class AgentLoop:
             self.sessions.save(session)
             return None  # TelegramChannel already confirmed via edit_message_text
 
-        if len(session.get_consolidation_events()) > self.memory_window:
+        # The production trusted-analysis profile must not launch model calls
+        # outside the request telemetry returned to the Web usage ledger.
+        if (
+            self.tool_profile != "trusted-analysis"
+            and len(session.get_consolidation_events()) > self.memory_window
+        ):
             self._track_task(self._consolidate_memory(session))
 
         request_uuid = str(uuid.uuid4())
@@ -1841,7 +1853,7 @@ class AgentLoop:
         after, keep = self._session_compress_config.get(
             key, (self.compress_after_turns, self.compress_keep_turns)
         )
-        if session.count_turns() > after:
+        if self.tool_profile != "trusted-analysis" and session.count_turns() > after:
             self._track_task(self._compress_history(key, keep_turns=keep))
 
         # Extract action chips for Telegram (strips <!-- CHIPS: [...] --> from content)
@@ -1968,7 +1980,7 @@ class AgentLoop:
         after, keep = self._session_compress_config.get(
             session_key, (self.compress_after_turns, self.compress_keep_turns)
         )
-        if session.count_turns() > after:
+        if self.tool_profile != "trusted-analysis" and session.count_turns() > after:
             self._track_task(self._compress_history(session_key, keep_turns=keep))
 
         return OutboundMessage(

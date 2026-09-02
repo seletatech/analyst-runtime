@@ -22,6 +22,7 @@ class _SequenceProvider(LLMProvider):
         super().__init__()
         self.responses = responses
         self.calls: list[list[dict[str, Any]]] = []
+        self.models: list[str | None] = []
 
     def get_default_model(self) -> str:
         return "test-model"
@@ -35,6 +36,7 @@ class _SequenceProvider(LLMProvider):
         temperature: float = 0.7,
     ) -> LLMResponse:
         self.calls.append(messages)
+        self.models.append(model)
         return self.responses.pop(0)
 
 
@@ -714,6 +716,7 @@ async def test_active_context_is_compacted_after_token_threshold(
         workspace=tmp_path,
         context_compact_threshold=10,
         context_compact_keep_messages=1,
+        consolidation_model="different-maintenance-model",
     )
 
     loop_result = await agent._run_agent_loop(
@@ -727,11 +730,77 @@ async def test_active_context_is_compacted_after_token_threshold(
     assert loop_result.model_call_count == 3
     assert loop_result.retry_count == 1
     assert loop_result.usage == {"prompt_tokens": 11}
+    assert provider.models == ["test-model", "test-model", "test-model"]
     final_request = provider.calls[2]
     rendered = str(final_request)
     assert "preserved facts and unfinished work" in rendered
     assert "OLD RAW CONTEXT" not in rendered
     assert final_request[0] == {"role": "system", "content": "system rules"}
+
+
+@pytest.mark.asyncio
+async def test_trusted_analysis_does_not_launch_unmetered_model_maintenance(
+    tmp_path: Path,
+) -> None:
+    provider = _SequenceProvider(
+        [LLMResponse(content="finished", finish_reason="stop")]
+    )
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=provider,
+        workspace=tmp_path,
+        tool_profile="trusted-analysis",
+        memory_window=1,
+        compress_after_turns=1,
+        compress_keep_turns=1,
+        consolidation_interval=0,
+    )
+    message = _message("metered-chat")
+    session = agent.sessions.get_or_create(message.session_key)
+    for index in range(2):
+        session.add_event(
+            {
+                "content": f"old question {index}",
+                "parent_uuid": None,
+                "type": "user_input",
+                "uuid": f"user-{index}",
+            }
+        )
+        session.add_event(
+            {
+                "content": f"old answer {index}",
+                "parent_uuid": f"user-{index}",
+                "type": "final_response",
+                "uuid": f"answer-{index}",
+            }
+        )
+
+    response = await agent._process_message(message)
+
+    assert response is not None
+    assert len(provider.calls) == 1
+    assert response.metadata["usage"]["model_call_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_trusted_analysis_new_session_does_not_call_consolidation_model(
+    tmp_path: Path,
+) -> None:
+    provider = _SequenceProvider([])
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=provider,
+        workspace=tmp_path,
+        tool_profile="trusted-analysis",
+    )
+    message = _message("new-session")
+    message.content = "/new"
+
+    response = await agent._process_message(message)
+
+    assert response is not None
+    assert response.content == "New session started."
+    assert provider.calls == []
 
 
 @pytest.mark.asyncio
