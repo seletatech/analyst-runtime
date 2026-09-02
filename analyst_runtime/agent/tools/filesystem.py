@@ -1,5 +1,9 @@
 """File system tools: read, write, edit, append, and patch."""
 
+import hashlib
+import json
+from contextvars import ContextVar
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -50,9 +54,20 @@ class ReadFileTool(Tool):
         self,
         allowed_dir: Path | None = None,
         allowed_dirs: list[Path] | None = None,
+        audit_results: bool = False,
     ):
         self._allowed_dir = allowed_dir
         self._allowed_dirs = allowed_dirs or []
+        self._audit_results = audit_results
+        self._conversation_id: ContextVar[str | None] = ContextVar(
+            "read_file_conversation_id",
+            default=None,
+        )
+
+    def set_conversation_context(self, conversation_id: str | None) -> None:
+        """Bind audited reads to the current authenticated conversation."""
+        normalized = conversation_id.strip() if isinstance(conversation_id, str) else ""
+        self._conversation_id.set(normalized or None)
 
     @property
     def name(self) -> str:
@@ -71,19 +86,122 @@ class ReadFileTool(Tool):
         }
 
     async def execute(self, path: str, **kwargs: Any) -> str:
+        read_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         try:
+            if self._audit_results and self._has_symlink_component(Path(path).expanduser()):
+                return self._audit_error("denied", path, read_at, "Symbolic links are not allowed")
             file_path = _resolve_path(path, self._allowed_dir, self._allowed_dirs)
             if not file_path.exists():
-                return f"Error: File not found: {path}"
+                return (
+                    self._audit_error("not_found", path, read_at, "File not found")
+                    if self._audit_results
+                    else f"Error: File not found: {path}"
+                )
             if not file_path.is_file():
-                return f"Error: Not a file: {path}"
+                return (
+                    self._audit_error("denied", path, read_at, "Not a file")
+                    if self._audit_results
+                    else f"Error: Not a file: {path}"
+                )
 
-            content = file_path.read_text(encoding="utf-8")
-            return content
+            content_bytes = file_path.read_bytes()
+            if self._audit_results:
+                return self._audited_content(file_path, content_bytes, read_at)
+            return content_bytes.decode("utf-8")
         except PermissionError as e:
-            return f"Error: {e}"
+            return (
+                self._audit_error("denied", path, read_at, str(e))
+                if self._audit_results
+                else f"Error: {e}"
+            )
         except Exception as e:
-            return f"Error reading file: {str(e)}"
+            return (
+                self._audit_error("error", path, read_at, str(e))
+                if self._audit_results
+                else f"Error reading file: {str(e)}"
+            )
+
+    @staticmethod
+    def _has_symlink_component(candidate: Path) -> bool:
+        absolute = candidate if candidate.is_absolute() else Path.cwd() / candidate
+        return any(part.is_symlink() for part in (*reversed(absolute.parents), absolute))
+
+    @staticmethod
+    def _audit_error(status: str, path: str, read_at: str, error: str) -> str:
+        return json.dumps(
+            {
+                "schema_version": "analyst-read-result/v1",
+                "status": status,
+                "path": path,
+                "read_at": read_at,
+                "error": error,
+            },
+            ensure_ascii=False,
+        )
+
+    def _audited_content(self, file_path: Path, content: bytes, read_at: str) -> str:
+        if len(content) > 1024 * 1024:
+            return self._audit_error(
+                "limit_exceeded", str(file_path), read_at, "File exceeds the 1MB read limit"
+            )
+        try:
+            decoded = content.decode("utf-8")
+        except UnicodeDecodeError:
+            return self._audit_error(
+                "unsupported", str(file_path), read_at, "File is not valid UTF-8 text"
+            )
+        manifest_path = file_path.parent / ".manifest.json"
+        while not manifest_path.is_file() and self._allowed_dir is not None:
+            if manifest_path.parent == self._allowed_dir.resolve():
+                break
+            manifest_path = manifest_path.parent.parent / ".manifest.json"
+        if not manifest_path.is_file():
+            return self._audit_error(
+                "denied", str(file_path), read_at, "File has no approved upload manifest"
+            )
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return self._audit_error(
+                "integrity_error", str(file_path), read_at, "Upload manifest is invalid"
+            )
+        digest = hashlib.sha256(content).hexdigest()
+        conversation_id = self._conversation_id.get()
+        if not conversation_id or manifest.get("conversation_id") != conversation_id:
+            return self._audit_error(
+                "denied",
+                str(file_path),
+                read_at,
+                "File is not approved for the current conversation",
+            )
+        relative_parts = file_path.relative_to(self._allowed_dir.resolve()).parts
+        if (
+            len(relative_parts) < 5
+            or relative_parts[0] != "uploads"
+            or manifest.get("user_id") != relative_parts[1]
+            or conversation_id != relative_parts[2]
+            or manifest.get("version") != relative_parts[3]
+            or manifest.get("schema_version") != "linghui-workspace-upload/v1"
+            or manifest.get("workspace_path") != str(file_path)
+            or manifest.get("content_sha256") != digest
+        ):
+            return self._audit_error(
+                "integrity_error", str(file_path), read_at, "File does not match its manifest"
+            )
+        return json.dumps(
+            {
+                "schema_version": "analyst-read-result/v1",
+                "status": "ok",
+                "path": str(file_path),
+                "content_sha256": digest,
+                "conversation_id": conversation_id,
+                "version": manifest.get("version"),
+                "uploaded_at": manifest.get("created_at"),
+                "read_at": read_at,
+                "content": decoded,
+            },
+            ensure_ascii=False,
+        )
 
 
 class WriteFileTool(Tool):

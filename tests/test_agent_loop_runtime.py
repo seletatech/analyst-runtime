@@ -57,7 +57,142 @@ def test_trusted_analysis_tool_profile_exposes_no_domain_tools_by_default(
         tool_profile="trusted-analysis",
     )
 
-    assert set(agent.tools.tool_names) == {"message"}
+    assert set(agent.tools.tool_names) == {"message", "read_file"}
+
+
+@pytest.mark.asyncio
+async def test_trusted_read_file_returns_audited_content_and_rejects_unapproved_paths(
+    tmp_path: Path,
+) -> None:
+    upload = tmp_path / "uploads" / "user" / "conversation" / "version"
+    upload.mkdir(parents=True)
+    uploaded_file = upload / "record.txt"
+    uploaded_file.write_text("批次 A123：待复核", encoding="utf-8")
+    import hashlib
+
+    content_hash = hashlib.sha256(uploaded_file.read_bytes()).hexdigest()
+    (upload / ".manifest.json").write_text(
+        json.dumps(
+            {
+                "content_sha256": content_hash,
+                "conversation_id": "conversation",
+                "created_at": "2026-09-02T08:00:00.000Z",
+                "schema_version": "linghui-workspace-upload/v1",
+                "user_id": "user",
+                "version": "version",
+                "workspace_path": str(uploaded_file),
+            }
+        ),
+        encoding="utf-8",
+    )
+    outside = tmp_path.parent / "outside-secret.txt"
+    outside.write_text("secret", encoding="utf-8")
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=_SequenceProvider([]),
+        workspace=tmp_path,
+        tool_profile="trusted-analysis",
+    )
+    agent._set_tool_context(
+        "web",
+        "chat-run",
+        analysis_conversation_id="conversation",
+    )
+
+    result = json.loads(
+        await agent.tools.execute("read_file", {"path": str(uploaded_file)})
+    )
+    agent._set_tool_context(
+        "web",
+        "chat-run",
+        analysis_conversation_id="other-conversation",
+    )
+    cross_conversation = json.loads(
+        await agent.tools.execute("read_file", {"path": str(uploaded_file)})
+    )
+    denied = json.loads(
+        await agent.tools.execute("read_file", {"path": str(outside)})
+    )
+
+    assert result["status"] == "ok"
+    assert result["content"] == "批次 A123：待复核"
+    assert result["content_sha256"] == content_hash
+    assert result["version"] == "version"
+    assert result["read_at"].endswith("Z")
+    assert cross_conversation["status"] == "denied"
+    assert denied["status"] == "denied"
+
+
+@pytest.mark.asyncio
+async def test_trusted_agent_can_choose_read_file_and_answer_from_uploaded_content(
+    tmp_path: Path,
+) -> None:
+    upload = tmp_path / "uploads" / "user" / "conversation" / "version"
+    upload.mkdir(parents=True)
+    uploaded_file = upload / "record.txt"
+    uploaded_file.write_text("批次 A123 的结论是待复核。", encoding="utf-8")
+    import hashlib
+
+    content_hash = hashlib.sha256(uploaded_file.read_bytes()).hexdigest()
+    (upload / ".manifest.json").write_text(
+        json.dumps(
+            {
+                "content_sha256": content_hash,
+                "conversation_id": "conversation",
+                "created_at": "2026-09-02T08:00:00.000Z",
+                "schema_version": "linghui-workspace-upload/v1",
+                "user_id": "user",
+                "version": "version",
+                "workspace_path": str(uploaded_file),
+            }
+        ),
+        encoding="utf-8",
+    )
+    provider = _SequenceProvider(
+        [
+            LLMResponse(
+                content="我先读取附件。",
+                tool_calls=[
+                    ToolCallRequest(
+                        id="read-1",
+                        name="read_file",
+                        arguments={"path": str(uploaded_file)},
+                    )
+                ],
+                usage={"prompt_tokens": 100, "completion_tokens": 10},
+            ),
+            LLMResponse(
+                content="最终结论：根据已读取文件，批次 A123 的结论是待复核。",
+                finish_reason="stop",
+                usage={"prompt_tokens": 180, "completion_tokens": 20},
+            ),
+        ]
+    )
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=provider,
+        workspace=tmp_path,
+        tool_profile="trusted-analysis",
+    )
+    agent._set_tool_context(
+        "web",
+        "chat-run",
+        analysis_conversation_id="conversation",
+    )
+
+    result = await agent._run_agent_loop(
+        [
+            {
+                "role": "user",
+                "content": f"请读取 {uploaded_file} 并告诉我 A123 的结论。",
+            }
+        ]
+    )
+
+    assert result.content == "最终结论：根据已读取文件，批次 A123 的结论是待复核。"
+    assert result.tools_used == ["read_file"]
+    assert "批次 A123 的结论是待复核" in str(provider.calls[1])
+    assert result.usage == {"prompt_tokens": 280, "completion_tokens": 30}
 
 
 @pytest.mark.asyncio
@@ -90,6 +225,7 @@ def test_workspace_can_enable_manufacturing_semantics_profile(tmp_path: Path) ->
 
     assert set(agent.tools.tool_names) == {
         "message",
+        "read_file",
         "propose_manufacturing_semantics",
         "confirm_manufacturing_semantics",
     }
@@ -458,6 +594,48 @@ async def test_length_continuation_never_sends_an_empty_assistant_message(
     ]
     assert assistant_messages
     assert assistant_messages[-1].get("content")
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_aggregates_actual_provider_usage_across_iterations(
+    tmp_path: Path,
+) -> None:
+    provider = _SequenceProvider(
+        [
+            LLMResponse(
+                content="partial",
+                finish_reason="length",
+                usage={
+                    "prompt_tokens": 100,
+                    "completion_tokens": 20,
+                    "prompt_cache_hit_tokens": 80,
+                    "prompt_cache_miss_tokens": 20,
+                },
+            ),
+            LLMResponse(
+                content="finished",
+                finish_reason="stop",
+                usage={
+                    "prompt_tokens": 150,
+                    "completion_tokens": 30,
+                    "prompt_cache_hit_tokens": 100,
+                    "prompt_cache_miss_tokens": 50,
+                },
+            ),
+        ]
+    )
+    agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path)
+
+    result = await agent._run_agent_loop(
+        [{"role": "user", "content": "do a long analysis"}]
+    )
+
+    assert result.usage == {
+        "prompt_tokens": 250,
+        "completion_tokens": 50,
+        "prompt_cache_hit_tokens": 180,
+        "prompt_cache_miss_tokens": 70,
+    }
 
 
 @pytest.mark.asyncio

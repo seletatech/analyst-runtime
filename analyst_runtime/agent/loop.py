@@ -67,6 +67,7 @@ class AgentLoopResult:
     tools_used: list[str]
     terminal_reason: str
     iterations: int
+    usage: dict[str, int]
 
     def __iter__(self):
         yield self.content
@@ -211,6 +212,9 @@ class AgentLoop:
         if self.tool_profile == "readonly":
             return
         if self.tool_profile == "trusted-analysis":
+            self.tools.register(
+                ReadFileTool(allowed_dir=self.workspace, audit_results=True)
+            )
             self._register_message_tool()
             self.runtime_profiles.register_tools(self.tools)
             return
@@ -309,6 +313,10 @@ class AgentLoop:
         if cron_tool := self.tools.get("cron"):
             if isinstance(cron_tool, CronTool):
                 cron_tool.set_context(channel, chat_id)
+
+        if read_file_tool := self.tools.get("read_file"):
+            if isinstance(read_file_tool, ReadFileTool):
+                read_file_tool.set_conversation_context(analysis_conversation_id)
 
         self.runtime_profiles.set_tool_context(
             ProfileTurnContext(
@@ -826,6 +834,7 @@ class AgentLoop:
         _completed_guarded_tool_calls: dict[str, str] = {}
         profile_handoff_message: str | None = None
         terminal_reason = "iteration_limit"
+        aggregate_usage: dict[str, int] = {}
 
         while iteration < self.max_iterations:
             iteration += 1
@@ -837,6 +846,9 @@ class AgentLoop:
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
             )
+            for key, value in response.usage.items():
+                if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                    aggregate_usage[key] = aggregate_usage.get(key, 0) + value
 
             if response.has_tool_calls:
                 if on_progress:
@@ -1240,6 +1252,7 @@ class AgentLoop:
             tools_used=tools_used,
             terminal_reason=terminal_reason,
             iterations=iteration,
+            usage=aggregate_usage,
         )
 
     async def _maybe_compact_active_context(
@@ -1787,6 +1800,8 @@ class AgentLoop:
 
         # Extract action chips for Telegram (strips <!-- CHIPS: [...] --> from content)
         outbound_metadata = dict(msg.metadata or {})
+        outbound_metadata["usage"] = loop_result.usage
+        outbound_metadata["model"] = active_model
         if terminal_error_code:
             outbound_metadata["error_code"] = terminal_error_code
         self.runtime_profiles.enrich_outbound_metadata(outbound_metadata)
