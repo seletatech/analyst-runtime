@@ -22,6 +22,7 @@ class LLMResponse:
     usage: dict[str, int] = field(default_factory=dict)
     reasoning_content: str | None = None  # Kimi, DeepSeek-R1 etc.
     message_id: str = ""  # Provider-assigned response ID (e.g. msg_bdrk_01PRY...)
+    retry_count: int = 0  # Provider transport retries before this response.
     
     @property
     def has_tool_calls(self) -> bool:

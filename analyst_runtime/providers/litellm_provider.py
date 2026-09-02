@@ -214,7 +214,9 @@ class LiteLLMProvider(LLMProvider):
             try:
                 async with asyncio.timeout(300):
                     response = await acompletion(**kwargs)
-                return self._parse_response(response)
+                parsed = self._parse_response(response)
+                parsed.retry_count = attempt - 1
+                return parsed
             except Exception as error:
                 last_error = error
                 transient = isinstance(error, TimeoutError) or self._is_transient_error(error)
@@ -243,6 +245,7 @@ class LiteLLMProvider(LLMProvider):
         return LLMResponse(
             content=f"Error calling LLM: {message}",
             finish_reason="error",
+            retry_count=max(0, attempt - 1),
         )
 
     @staticmethod

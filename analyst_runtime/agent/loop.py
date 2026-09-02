@@ -5,7 +5,7 @@ import json
 import re
 import uuid
 from contextlib import AsyncExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal
 
@@ -43,7 +43,7 @@ from analyst_runtime.config.schema import ExecToolConfig
 from analyst_runtime.cron.service import CronService
 from analyst_runtime.profiles import RuntimeProfiles
 from analyst_runtime.profiles.types import ProfileTurnContext
-from analyst_runtime.providers.base import LLMProvider
+from analyst_runtime.providers.base import LLMProvider, LLMResponse
 from analyst_runtime.session.manager import HISTORY_SUMMARY_TYPE, Session, SessionManager
 from analyst_runtime.utils.tool_calls import sanitize_tool_name
 from analyst_runtime.workspace import WorkspaceConfiguration
@@ -67,11 +67,38 @@ class AgentLoopResult:
     tools_used: list[str]
     terminal_reason: str
     iterations: int
+    application_retry_count: int
+    model_call_count: int
+    provider_retry_count: int
+    retry_count: int
     usage: dict[str, int]
 
     def __iter__(self):
         yield self.content
         yield self.tools_used
+
+
+@dataclass
+class RunModelTelemetry:
+    model_call_count: int = 0
+    provider_retry_count: int = 0
+    application_retry_count: int = 0
+    usage: dict[str, int] = field(default_factory=dict)
+
+    def record(self, response: LLMResponse) -> None:
+        retries = max(0, response.retry_count)
+        self.model_call_count += 1 + retries
+        self.provider_retry_count += retries
+        for key, value in response.usage.items():
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                self.usage[key] = self.usage.get(key, 0) + value
+
+    def record_application_retry(self) -> None:
+        self.application_retry_count += 1
+
+    @property
+    def retry_count(self) -> int:
+        return self.provider_retry_count + self.application_retry_count
 
 
 class AgentLoop:
@@ -834,7 +861,7 @@ class AgentLoop:
         _completed_guarded_tool_calls: dict[str, str] = {}
         profile_handoff_message: str | None = None
         terminal_reason = "iteration_limit"
-        aggregate_usage: dict[str, int] = {}
+        model_telemetry = RunModelTelemetry()
 
         while iteration < self.max_iterations:
             iteration += 1
@@ -846,9 +873,7 @@ class AgentLoop:
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
             )
-            for key, value in response.usage.items():
-                if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-                    aggregate_usage[key] = aggregate_usage.get(key, 0) + value
+            model_telemetry.record(response)
 
             if response.has_tool_calls:
                 if on_progress:
@@ -1075,6 +1100,8 @@ class AgentLoop:
                             ),
                         }
                     )
+                    if iteration < self.max_iterations:
+                        model_telemetry.record_application_retry()
                 else:
                     _consecutive_malformed = 0
                     _real_iterations += 1
@@ -1082,6 +1109,7 @@ class AgentLoop:
                     messages,
                     response.usage,
                     model=active_model,
+                    telemetry=model_telemetry,
                 )
             elif response.finish_reason == "length":
                 # Model hit max_tokens before finishing — inject a continue prompt
@@ -1114,7 +1142,10 @@ class AgentLoop:
                     messages,
                     response.usage,
                     model=active_model,
+                    telemetry=model_telemetry,
                 )
+                if iteration < self.max_iterations:
+                    model_telemetry.record_application_retry()
             else:
                 final_content = self._strip_think(response.content)
 
@@ -1141,6 +1172,7 @@ class AgentLoop:
                             "content": "Please respond to the user based on your findings.",
                         }
                     )
+                    model_telemetry.record_application_retry()
                     continue
 
                 if (
@@ -1178,6 +1210,7 @@ class AgentLoop:
                         }
                     )
                     final_content = None
+                    model_telemetry.record_application_retry()
                     continue
 
                 # Kimi k2.5 sometimes emits a text-only "I'll do X next" announcement
@@ -1216,6 +1249,7 @@ class AgentLoop:
                         }
                     )
                     final_content = None  # don't emit final_response yet
+                    model_telemetry.record_application_retry()
                     continue
 
                 logger.info(
@@ -1252,7 +1286,11 @@ class AgentLoop:
             tools_used=tools_used,
             terminal_reason=terminal_reason,
             iterations=iteration,
-            usage=aggregate_usage,
+            application_retry_count=model_telemetry.application_retry_count,
+            model_call_count=model_telemetry.model_call_count,
+            provider_retry_count=model_telemetry.provider_retry_count,
+            retry_count=model_telemetry.retry_count,
+            usage=model_telemetry.usage,
         )
 
     async def _maybe_compact_active_context(
@@ -1261,6 +1299,7 @@ class AgentLoop:
         usage: dict[str, int],
         *,
         model: str,
+        telemetry: RunModelTelemetry | None = None,
     ) -> list[dict[str, Any]]:
         """Replace old model context with a summary after the token threshold."""
         prompt_tokens = int(
@@ -1272,7 +1311,11 @@ class AgentLoop:
         if prompt_tokens < self.context_compact_threshold:
             return messages
 
-        compacted = await self._compact_active_context(messages, model=model)
+        compacted = await self._compact_active_context(
+            messages,
+            model=model,
+            telemetry=telemetry,
+        )
         if compacted is messages:
             return messages
         logger.info(
@@ -1288,6 +1331,7 @@ class AgentLoop:
         messages: list[dict[str, Any]],
         *,
         model: str,
+        telemetry: RunModelTelemetry | None = None,
     ) -> list[dict[str, Any]]:
         """Summarize older messages while preserving system rules and recent work."""
         leading_system_count = 0
@@ -1339,6 +1383,8 @@ class AgentLoop:
                 temperature=0,
                 max_tokens=self.max_tokens,
             )
+            if telemetry is not None:
+                telemetry.record(response)
             summary = (response.content or "").strip()
             if not summary:
                 logger.warning("Active context compaction returned an empty summary")
@@ -1800,7 +1846,13 @@ class AgentLoop:
 
         # Extract action chips for Telegram (strips <!-- CHIPS: [...] --> from content)
         outbound_metadata = dict(msg.metadata or {})
-        outbound_metadata["usage"] = loop_result.usage
+        outbound_metadata["usage"] = {
+            **loop_result.usage,
+            "application_retry_count": loop_result.application_retry_count,
+            "model_call_count": loop_result.model_call_count,
+            "provider_retry_count": loop_result.provider_retry_count,
+            "retry_count": loop_result.retry_count,
+        }
         outbound_metadata["model"] = active_model
         if terminal_error_code:
             outbound_metadata["error_code"] = terminal_error_code

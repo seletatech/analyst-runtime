@@ -257,6 +257,10 @@ async def test_agent_response_preserves_run_and_conversation_identity(
     assert response.run_id == "run-123"
     assert response.conversation_id == "conversation-456"
     assert response.chat_id == "chat-run-123"
+    assert response.metadata["usage"]["model_call_count"] == 1
+    assert response.metadata["usage"]["application_retry_count"] == 0
+    assert response.metadata["usage"]["provider_retry_count"] == 0
+    assert response.metadata["usage"]["retry_count"] == 0
 
 
 @pytest.mark.asyncio
@@ -568,6 +572,31 @@ def test_deepseek_cache_usage_is_preserved_and_logged(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_litellm_reports_transport_retries(monkeypatch) -> None:
+    from analyst_runtime.providers import litellm_provider
+
+    attempts = 0
+
+    async def fake_completion(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("Unable to get json response - Expecting value")
+        message = SimpleNamespace(content="recovered", tool_calls=None)
+        choice = SimpleNamespace(message=message, finish_reason="stop")
+        return SimpleNamespace(choices=[choice], usage=None)
+
+    monkeypatch.setattr(litellm_provider, "acompletion", fake_completion)
+    monkeypatch.setattr(litellm_provider, "_LLM_RETRY_DELAYS_SECONDS", (0, 0))
+    provider = LiteLLMProvider(default_model="deepseek/deepseek-v4-flash")
+
+    response = await provider.chat(messages=[{"role": "user", "content": "analyze"}])
+
+    assert attempts == 2
+    assert response.retry_count == 1
+
+
+@pytest.mark.asyncio
 async def test_length_continuation_never_sends_an_empty_assistant_message(
     tmp_path: Path,
 ) -> None:
@@ -636,6 +665,32 @@ async def test_agent_loop_aggregates_actual_provider_usage_across_iterations(
         "prompt_cache_hit_tokens": 180,
         "prompt_cache_miss_tokens": 70,
     }
+    assert result.model_call_count == 2
+    assert result.application_retry_count == 1
+    assert result.provider_retry_count == 0
+    assert result.retry_count == 1
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_counts_provider_transport_retries(tmp_path: Path) -> None:
+    provider = _SequenceProvider(
+        [
+            LLMResponse(
+                content="finished",
+                finish_reason="stop",
+                retry_count=2,
+                usage={"prompt_tokens": 10, "completion_tokens": 5},
+            )
+        ]
+    )
+    agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path)
+
+    result = await agent._run_agent_loop([{"role": "user", "content": "analyze"}])
+
+    assert result.model_call_count == 3
+    assert result.application_retry_count == 0
+    assert result.provider_retry_count == 2
+    assert result.retry_count == 2
 
 
 @pytest.mark.asyncio
@@ -661,14 +716,17 @@ async def test_active_context_is_compacted_after_token_threshold(
         context_compact_keep_messages=1,
     )
 
-    result, _ = await agent._run_agent_loop(
+    loop_result = await agent._run_agent_loop(
         [
             {"role": "system", "content": "system rules"},
             {"role": "user", "content": "OLD RAW CONTEXT"},
         ]
     )
 
-    assert result == "finished after compacting"
+    assert loop_result.content == "finished after compacting"
+    assert loop_result.model_call_count == 3
+    assert loop_result.retry_count == 1
+    assert loop_result.usage == {"prompt_tokens": 11}
     final_request = provider.calls[2]
     rendered = str(final_request)
     assert "preserved facts and unfinished work" in rendered
