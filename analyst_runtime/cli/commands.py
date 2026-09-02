@@ -79,6 +79,11 @@ def _resolve_consolidation_model(llm_provider: str) -> str | None:
             return None
         return raw if raw.startswith("deepseek/") else f"deepseek/{raw}"
 
+    if llm_provider == "zhipu":
+        if not raw:
+            return None
+        return raw if raw.startswith("zai/") else f"zai/{raw}"
+
     return raw or None
 
 
@@ -89,6 +94,7 @@ def _resolve_sandbox_model(llm_provider: str) -> str:
         "openrouter": "openai/gpt-4o-mini",
         "deepseek": "deepseek-chat",
         "openai": "gpt-4o-mini",
+        "zhipu": "glm-5.3-flash",
     }
     raw_model_id = (
         os.environ.get("LLM_MODEL_ID")
@@ -113,6 +119,9 @@ def _resolve_sandbox_model(llm_provider: str) -> str:
 
     if llm_provider == "openai":
         return raw_model_id
+
+    if llm_provider == "zhipu":
+        return raw_model_id if raw_model_id.startswith("zai/") else f"zai/{raw_model_id}"
 
     return raw_model_id if raw_model_id.startswith("openrouter/") else f"openrouter/{raw_model_id}"
 
@@ -715,7 +724,8 @@ def sandbox():
     sandbox_id = os.environ.get("SANDBOX_ID", "default")
     workspace_path = Path(os.environ.get("WORKSPACE_PATH", "/workspace"))
     llm_provider = os.environ.get("LLM_PROVIDER", "bedrock").strip().lower()
-    if llm_provider in {"bedrock", "openrouter", "deepseek", "openai"}:
+    llm_provider = {"bigmodel": "zhipu", "zai": "zhipu"}.get(llm_provider, llm_provider)
+    if llm_provider in {"bedrock", "openrouter", "deepseek", "openai", "zhipu"}:
         model = _resolve_sandbox_model(llm_provider)
     else:
         logger.warning("Unknown LLM_PROVIDER=%s, falling back to openrouter", llm_provider)
@@ -779,6 +789,12 @@ def sandbox():
             "openai": {
                 "apiKey": os.environ.get("OPENAI_API_KEY", ""),
                 "apiBase": os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+            },
+            "zhipu": {
+                "apiKey": os.environ.get("ZAI_API_KEY", ""),
+                "apiBase": os.environ.get(
+                    "ZAI_BASE_URL", "https://open.bigmodel.cn/api/paas/v4"
+                ),
             },
             "anthropic": {"apiKey": os.environ.get("ANTHROPIC_API_KEY", "")},
         },

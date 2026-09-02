@@ -153,13 +153,18 @@ async def test_exec_extracts_sealed_evidence_from_safely_truncated_json(tool):
 def test_output_scrubs_provider_and_channel_credentials(tool, monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-secret")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "telegram-secret")
+    monkeypatch.setenv("ZAI_API_KEY", "bigmodel-secret")
 
-    scrubbed = tool._scrub_output("deepseek-secret telegram-secret")
+    scrubbed = tool._scrub_output(
+        "deepseek-secret telegram-secret bigmodel-secret"
+    )
 
     assert "deepseek-secret" not in scrubbed
     assert "telegram-secret" not in scrubbed
+    assert "bigmodel-secret" not in scrubbed
     assert "[REDACTED:DEEPSEEK_API_KEY]" in scrubbed
     assert "[REDACTED:TELEGRAM_BOT_TOKEN]" in scrubbed
+    assert "[REDACTED:ZAI_API_KEY]" in scrubbed
 
 
 @pytest.mark.asyncio
