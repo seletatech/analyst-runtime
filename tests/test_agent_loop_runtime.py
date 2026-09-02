@@ -282,6 +282,44 @@ async def test_runtime_emits_send_message_trace_before_final_response(
     assert final.content == "done"
 
 
+@pytest.mark.asyncio
+async def test_runtime_applies_steer_before_the_next_model_step(tmp_path: Path) -> None:
+    bus = MessageBus()
+    provider = _SequenceProvider(
+        [
+            LLMResponse(content="I was about to answer."),
+            LLMResponse(content="Updated answer for the latest three months."),
+        ]
+    )
+    agent = AgentLoop(bus=bus, provider=provider, workspace=tmp_path)
+    execution_key = "web:run-123"
+    agent._steer_queues[execution_key] = asyncio.Queue()
+    agent._steer_queues[execution_key].put_nowait(
+        InboundMessage(
+            channel="web",
+            sender_id="chat-run-123",
+            chat_id="chat-run-123",
+            content="只看最近三个月",
+            run_id="run-123",
+            conversation_id="conversation-456",
+            metadata={"control": "steer"},
+        )
+    )
+
+    result = await agent._run_agent_loop(
+        [{"role": "user", "content": "分析全年趋势"}],
+        execution_key=execution_key,
+    )
+
+    assert result.content == "Updated answer for the latest three months."
+    assert any(
+        message.get("role") == "user" and "只看最近三个月" in message.get("content", "")
+        for message in provider.calls[1]
+    )
+    acknowledgement = await bus.consume_outbound()
+    assert acknowledgement.metadata["control"] == "steer_applied"
+
+
 def test_trusted_analysis_tool_profile_exposes_no_domain_tools_by_default(
     tmp_path: Path,
 ) -> None:

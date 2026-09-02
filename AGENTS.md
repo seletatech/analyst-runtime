@@ -13,4 +13,7 @@ retry policy, session/workspace context, trace, and final message delivery.
 - BYOK values are request-scoped secrets. Remove them before logging, persistence, progress,
   trace, and outbound publication.
 - Emit ordered append-only progress. Do not collapse Call Tool and Tool Result into one state.
+- Apply run-scoped steering only inside the active agent loop at a safe step boundary. Preserve
+  it as user input, acknowledge only after context insertion, and reject it if the target run
+  is no longer active.
 - Product prompts and data belong in the consuming workspace, not this generic runtime.

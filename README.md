@@ -32,6 +32,11 @@ call, reasoning step, tool decision/execution, retry, session update, workspace 
 final message. UI frameworks may adapt its events for display but must not wrap it in a
 second agent loop.
 
+Run-scoped `steer_request` control messages are accepted only while that run is active. The
+Runtime queues the instruction and applies it after the current tool-call batch (or before a
+text-only response becomes final), persists it as user input, acknowledges `steer_applied`,
+and then continues the same agent loop. It never starts a parallel run for steering.
+
 Vercel AI SDK (`ai` and `@ai-sdk/*`) is forbidden in this repository, including the optional
 Node channel bridges. Python provider access remains behind `LLMProvider`; product model
 selection arrives as a trusted profile ID and is resolved here to its provider/model. BYOK

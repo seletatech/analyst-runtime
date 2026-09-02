@@ -207,6 +207,7 @@ class AgentLoop:
         self._background_tasks: set[asyncio.Task] = set()
         self._active_message_tasks: dict[str, asyncio.Task] = {}
         self._message_queues: dict[str, asyncio.Queue[InboundMessage]] = {}
+        self._steer_queues: dict[str, asyncio.Queue[InboundMessage]] = {}
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._message_semaphore = asyncio.Semaphore(self.max_concurrent_messages)
         self._pending_cancellations: set[str] = set()
@@ -836,6 +837,7 @@ class AgentLoop:
         session: Session | None = None,
         request_uuid: str | None = None,
         model: str | None = None,
+        execution_key: str | None = None,
     ) -> AgentLoopResult:
         """
         Run the agent iteration loop.
@@ -1044,6 +1046,18 @@ class AgentLoop:
 
                     if handoff := self.runtime_profiles.handoff_message(sanitized_name, result):
                         profile_handoff_message = handoff
+
+                steered_messages = await self._apply_pending_steers(
+                    execution_key,
+                    messages,
+                    session=session,
+                    parent_uuid=parent_uuid,
+                )
+                if steered_messages:
+                    messages = steered_messages
+                    profile_handoff_message = None
+                    final_content = None
+                    continue
 
                 if profile_handoff_message:
                     final_content = profile_handoff_message
@@ -1255,6 +1269,18 @@ class AgentLoop:
                     model_telemetry.record_application_retry()
                     continue
 
+                steered_messages = await self._apply_pending_steers(
+                    execution_key,
+                    messages,
+                    session=session,
+                    parent_uuid=parent_uuid,
+                    preceding_assistant=response.content,
+                )
+                if steered_messages:
+                    messages = steered_messages
+                    final_content = None
+                    continue
+
                 logger.info(
                     "Agent loop ended at iteration {}: finish_reason={} tools_used={} "
                     "has_content={} (model={})",
@@ -1295,6 +1321,90 @@ class AgentLoop:
             retry_count=model_telemetry.retry_count,
             usage=model_telemetry.usage,
         )
+
+    async def _apply_pending_steers(
+        self,
+        execution_key: str | None,
+        messages: list[dict[str, Any]],
+        *,
+        session: Session | None,
+        parent_uuid: str | None,
+        preceding_assistant: str | None = None,
+    ) -> list[dict[str, Any]] | None:
+        """Apply accepted user steering only at a safe agent-step boundary."""
+        if not execution_key:
+            return None
+        queue = self._steer_queues.get(execution_key)
+        if not queue or queue.empty():
+            return None
+
+        steers: list[InboundMessage] = []
+        while not queue.empty():
+            steers.append(queue.get_nowait())
+            queue.task_done()
+        if not steers:
+            return None
+
+        updated = messages
+        if preceding_assistant:
+            updated = self.context.add_assistant_message(
+                updated,
+                preceding_assistant,
+                None,
+            )
+        combined = "\n\n".join(steer.content.strip() for steer in steers if steer.content.strip())
+        updated.append(
+            {
+                "role": "user",
+                "content": (
+                    "[The user added this instruction while you were working. "
+                    "Apply it now to the current task.]\n\n" + combined
+                ),
+            }
+        )
+        if session:
+            for steer in steers:
+                session.add_event(
+                    {
+                        "uuid": str(uuid.uuid4()),
+                        "parent_uuid": parent_uuid,
+                        "type": "user_input",
+                        "steer": True,
+                        "content": steer.content,
+                        "channel": steer.channel,
+                        "chat_id": steer.chat_id,
+                    }
+                )
+        for steer in steers:
+            await self.bus.publish_outbound(
+                OutboundMessage(
+                    channel=steer.channel,
+                    chat_id=steer.chat_id,
+                    content="",
+                    run_id=steer.run_id,
+                    conversation_id=steer.conversation_id,
+                    metadata={"control": "steer_applied"},
+                )
+            )
+        return updated
+
+    async def _reject_pending_steers(self, execution_key: str) -> None:
+        queue = self._steer_queues.pop(execution_key, None)
+        if not queue:
+            return
+        while not queue.empty():
+            steer = queue.get_nowait()
+            queue.task_done()
+            await self.bus.publish_outbound(
+                OutboundMessage(
+                    channel=steer.channel,
+                    chat_id=steer.chat_id,
+                    content="",
+                    run_id=steer.run_id,
+                    conversation_id=steer.conversation_id,
+                    metadata={"control": "steer_rejected"},
+                )
+            )
 
     async def _maybe_compact_active_context(
         self,
@@ -1437,6 +1547,25 @@ class AgentLoop:
                     self._pending_cancellations.discard(execution_key)
                     continue
 
+                if msg.metadata.get("control") == "steer":
+                    message_task = self._active_message_tasks.get(execution_key)
+                    if message_task and not message_task.done() and msg.content.strip():
+                        self._steer_queues.setdefault(execution_key, asyncio.Queue()).put_nowait(
+                            msg
+                        )
+                    else:
+                        await self.bus.publish_outbound(
+                            OutboundMessage(
+                                channel=msg.channel,
+                                chat_id=msg.chat_id,
+                                content="",
+                                run_id=msg.run_id,
+                                conversation_id=msg.conversation_id,
+                                metadata={"control": "steer_rejected"},
+                            )
+                        )
+                    continue
+
                 queue = self._message_queues.setdefault(execution_key, asyncio.Queue())
                 queue.put_nowait(msg)
                 message_task = self._active_message_tasks.get(execution_key)
@@ -1472,6 +1601,7 @@ class AgentLoop:
                 if current_task and current_task.cancelling():
                     break
         finally:
+            await self._reject_pending_steers(execution_key)
             if current_task and current_task.cancelling():
                 while not queue.empty():
                     queue.get_nowait()
@@ -1901,6 +2031,7 @@ class AgentLoop:
                 session=session,
                 request_uuid=request_uuid,
                 model=active_model,
+                execution_key=msg.execution_key,
             )
         finally:
             self.provider.reset_request_credentials(credential_token)

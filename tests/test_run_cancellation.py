@@ -144,6 +144,33 @@ async def test_web_channel_publishes_cancel_control_to_the_agent_bus() -> None:
 
 
 @pytest.mark.asyncio
+async def test_web_channel_publishes_steer_control_to_the_same_run() -> None:
+    bus = MagicMock()
+    bus.publish_inbound = AsyncMock()
+    channel = WebChannel(
+        MagicMock(sandbox_id="test-sandbox", gateway_url="http://gateway"),
+        bus,
+    )
+
+    await channel._process_inbound(
+        {
+            "type": "steer_request",
+            "session_id": "chat-run-123",
+            "run_id": "run-123",
+            "conversation_id": "conversation-456",
+            "content": "只看最近三个月",
+            "metadata": {"runtime": "linghui-dashboard-agent"},
+        }
+    )
+
+    published = bus.publish_inbound.await_args.args[0]
+    assert published.execution_key == "web:run-123"
+    assert published.session_key == "web:conversation-456"
+    assert published.content == "只看最近三个月"
+    assert published.metadata["control"] == "steer"
+
+
+@pytest.mark.asyncio
 async def test_web_channel_routes_credential_verification_to_runtime() -> None:
     bus = MagicMock()
     bus.publish_inbound = AsyncMock()

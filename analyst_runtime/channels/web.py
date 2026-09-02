@@ -34,6 +34,7 @@ from analyst_runtime.channels.base import BaseChannel
 
 MSG_TYPE_USER_MESSAGE = "user_message"
 MSG_TYPE_CANCEL_REQUEST = "cancel_request"
+MSG_TYPE_STEER_REQUEST = "steer_request"
 MSG_TYPE_PROVIDER_CREDENTIAL_VERIFICATION = "provider_credential_verification"
 MSG_TYPE_AGENT_RESPONSE = "agent_response"
 MSG_TYPE_AGENT_STATUS = "agent_status"
@@ -271,6 +272,20 @@ class WebChannel(BaseChannel):
                     run_id=run_id,
                     conversation_id=conversation_id,
                     metadata={**metadata, "control": "cancel"},
+                )
+            )
+            return
+
+        if msg_type == MSG_TYPE_STEER_REQUEST:
+            await self.bus.publish_inbound(
+                InboundMessage(
+                    channel=self.name,
+                    sender_id=session_id,
+                    chat_id=session_id,
+                    content=content,
+                    run_id=run_id,
+                    conversation_id=conversation_id,
+                    metadata={**metadata, "control": "steer"},
                 )
             )
             return
