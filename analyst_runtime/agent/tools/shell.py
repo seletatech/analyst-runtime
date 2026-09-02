@@ -28,6 +28,7 @@ _SECRET_ENV_VARS: frozenset[str] = frozenset(
         "TELEGRAM_BOT_TOKEN",
         "TELEGRAM_TOKEN",
         "WHATSAPP_BRIDGE_TOKEN",
+        "ZAI_API_KEY",
     }
 )
 

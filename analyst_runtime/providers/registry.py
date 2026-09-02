@@ -281,19 +281,35 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         name="zhipu",
         keywords=("zhipu", "glm", "zai"),
         env_key="ZAI_API_KEY",
-        display_name="Zhipu AI",
+        display_name="Zhipu BigModel",
         litellm_prefix="zai",              # glm-4 → zai/glm-4
         skip_prefixes=("zhipu/", "zai/", "openrouter/", "hosted_vllm/"),
         env_extras=(
+            ("ZAI_API_BASE", "{api_base}"),
             ("ZHIPUAI_API_KEY", "{api_key}"),
         ),
         is_gateway=False,
         is_local=False,
         detect_by_key_prefix="",
         detect_by_base_keyword="",
-        default_api_base="",
+        default_api_base="https://open.bigmodel.cn/api/paas/v4",
         strip_model_prefix=False,
-        model_overrides=(),
+        model_overrides=(
+            (
+                "glm-5.3-flash",
+                {
+                    # GLM-5.3-Flash is newer than the pinned LiteLLM model table.
+                    # extra_body keeps the required BigModel fields from being
+                    # dropped while the native provider metadata catches up.
+                    "extra_body": {
+                        "reasoning_effort": "max",
+                        "thinking": {"clear_thinking": False, "type": "enabled"},
+                    },
+                    "temperature": 1.0,
+                    "top_p": 0.95,
+                },
+            ),
+        ),
     ),
 
     # DashScope: Qwen models, needs "dashscope/" prefix.
