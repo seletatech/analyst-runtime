@@ -159,7 +159,10 @@ async def test_web_channel_publishes_steer_control_to_the_same_run() -> None:
             "run_id": "run-123",
             "conversation_id": "conversation-456",
             "content": "只看最近三个月",
-            "metadata": {"runtime": "linghui-dashboard-agent"},
+            "metadata": {
+                "runtime": "linghui-dashboard-agent",
+                "steer_id": "steer-789",
+            },
         }
     )
 
@@ -168,6 +171,7 @@ async def test_web_channel_publishes_steer_control_to_the_same_run() -> None:
     assert published.session_key == "web:conversation-456"
     assert published.content == "只看最近三个月"
     assert published.metadata["control"] == "steer"
+    assert published.metadata["steer_id"] == "steer-789"
 
 
 @pytest.mark.asyncio

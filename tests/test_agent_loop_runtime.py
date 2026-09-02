@@ -302,7 +302,7 @@ async def test_runtime_applies_steer_before_the_next_model_step(tmp_path: Path) 
             content="只看最近三个月",
             run_id="run-123",
             conversation_id="conversation-456",
-            metadata={"control": "steer"},
+            metadata={"control": "steer", "steer_id": "steer-789"},
         )
     )
 
@@ -318,6 +318,7 @@ async def test_runtime_applies_steer_before_the_next_model_step(tmp_path: Path) 
     )
     acknowledgement = await bus.consume_outbound()
     assert acknowledgement.metadata["control"] == "steer_applied"
+    assert acknowledgement.metadata["steer_id"] == "steer-789"
 
 
 def test_trusted_analysis_tool_profile_exposes_no_domain_tools_by_default(

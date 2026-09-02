@@ -1383,7 +1383,10 @@ class AgentLoop:
                     content="",
                     run_id=steer.run_id,
                     conversation_id=steer.conversation_id,
-                    metadata={"control": "steer_applied"},
+                    metadata={
+                        "control": "steer_applied",
+                        "steer_id": steer.metadata.get("steer_id"),
+                    },
                 )
             )
         return updated
@@ -1402,7 +1405,10 @@ class AgentLoop:
                     content="",
                     run_id=steer.run_id,
                     conversation_id=steer.conversation_id,
-                    metadata={"control": "steer_rejected"},
+                    metadata={
+                        "control": "steer_rejected",
+                        "steer_id": steer.metadata.get("steer_id"),
+                    },
                 )
             )
 
@@ -1561,7 +1567,10 @@ class AgentLoop:
                                 content="",
                                 run_id=msg.run_id,
                                 conversation_id=msg.conversation_id,
-                                metadata={"control": "steer_rejected"},
+                                metadata={
+                                    "control": "steer_rejected",
+                                    "steer_id": msg.metadata.get("steer_id"),
+                                },
                             )
                         )
                     continue
