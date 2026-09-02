@@ -23,6 +23,28 @@ class _SequenceProvider(LLMProvider):
         self.responses = responses
         self.calls: list[list[dict[str, Any]]] = []
         self.models: list[str | None] = []
+        self.request_credentials: list[str] = []
+        self.request_providers: list[str | None] = []
+        self.reset_tokens: list[object | None] = []
+        self.verified_credentials: list[tuple[str, str]] = []
+
+    def set_request_credentials(
+        self,
+        *,
+        api_key: str,
+        api_base: str | None = None,
+        provider: str | None = None,
+    ) -> object:
+        self.request_credentials.append(api_key)
+        self.request_providers.append(provider)
+        return "credential-token"
+
+    def reset_request_credentials(self, token: object | None) -> None:
+        self.reset_tokens.append(token)
+
+    async def verify_request_credentials(self, *, api_key: str, provider: str) -> bool:
+        self.verified_credentials.append((api_key, provider))
+        return api_key == "valid-key"
 
     def get_default_model(self) -> str:
         return "test-model"
@@ -47,6 +69,217 @@ def _message(chat_id: str) -> InboundMessage:
         chat_id=chat_id,
         content=f"question for {chat_id}",
     )
+
+
+@pytest.mark.asyncio
+async def test_trusted_run_model_and_byok_are_request_scoped_and_never_echoed(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "workspace.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "trusted_gateway": {
+                    "project_id": "linghui-ai-suite",
+                    "runtime": "linghui-dashboard-agent",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    provider = _SequenceProvider([LLMResponse(content="done")])
+    agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path)
+    message = InboundMessage(
+        channel="web",
+        sender_id="user",
+        chat_id="chat-run",
+        content="analyze",
+        run_id="run-1",
+        conversation_id="conversation-1",
+        metadata={
+            "_provider_credential": {
+                "api_key": "byok-secret",
+                "provider": "deepseek",
+                "source": "byok",
+            },
+            "model_profile_id": "deepseek-chat",
+            "project_id": "linghui-ai-suite",
+            "runtime": "linghui-dashboard-agent",
+        },
+    )
+
+    response = await agent._process_message(message)
+
+    assert provider.models == ["deepseek-v4-flash"]
+    assert provider.request_credentials == ["byok-secret"]
+    assert provider.request_providers == ["deepseek"]
+    assert provider.reset_tokens == ["credential-token"]
+    assert "_provider_credential" not in message.metadata
+    assert response is not None
+    assert "_provider_credential" not in response.metadata
+    assert "byok-secret" not in json.dumps(response.metadata)
+
+
+@pytest.mark.asyncio
+async def test_untrusted_messages_cannot_override_model_or_provider_credentials(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "workspace.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "trusted_gateway": {
+                    "project_id": "linghui-ai-suite",
+                    "runtime": "linghui-dashboard-agent",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    provider = _SequenceProvider([LLMResponse(content="done")])
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=provider,
+        workspace=tmp_path,
+        model="glm-5.3-flash",
+    )
+    message = InboundMessage(
+        channel="web",
+        sender_id="user",
+        chat_id="chat-run",
+        content="analyze",
+        metadata={
+            "_provider_credential": {
+                "api_key": "untrusted-secret",
+                "provider": "deepseek",
+                "source": "byok",
+            },
+            "model": "deepseek-v4-flash",
+            "project_id": "different-project",
+            "runtime": "linghui-dashboard-agent",
+        },
+    )
+
+    response = await agent._process_message(message)
+
+    assert provider.models == ["glm-5.3-flash"]
+    assert provider.request_credentials == []
+    assert provider.request_providers == []
+    assert "_provider_credential" not in message.metadata
+    assert response is not None
+    assert "untrusted-secret" not in json.dumps(response.metadata)
+
+
+@pytest.mark.asyncio
+async def test_runtime_owns_profile_resolution_and_rejects_mismatched_byok(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "workspace.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "trusted_gateway": {
+                    "project_id": "linghui-ai-suite",
+                    "runtime": "linghui-dashboard-agent",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    provider = _SequenceProvider([LLMResponse(content="done")])
+    agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path)
+    message = InboundMessage(
+        channel="web",
+        sender_id="user",
+        chat_id="chat-run",
+        content="analyze",
+        run_id="run-1",
+        conversation_id="conversation-1",
+        metadata={
+            "_provider_credential": {
+                "api_key": "wrong-provider-key",
+                "provider": "zhipu",
+                "source": "byok",
+            },
+            "model_profile_id": "deepseek-chat",
+            "project_id": "linghui-ai-suite",
+            "runtime": "linghui-dashboard-agent",
+        },
+    )
+
+    response = await agent._process_message(message)
+
+    assert provider.models == []
+    assert provider.request_credentials == []
+    assert response is not None
+    assert response.metadata["error_code"] == "ANALYST-RUNTIME-CREDENTIAL-001"
+
+
+@pytest.mark.asyncio
+async def test_runtime_verifies_provider_credentials_without_echoing_secret(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "workspace.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "trusted_gateway": {
+                    "project_id": "linghui-ai-suite",
+                    "runtime": "linghui-dashboard-agent",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    provider = _SequenceProvider([])
+    agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path)
+    message = InboundMessage(
+        channel="web",
+        sender_id="credential-run",
+        chat_id="credential-run",
+        content="",
+        metadata={
+            "_provider_credential": {
+                "api_key": "valid-key",
+                "provider": "zhipu",
+                "source": "byok",
+            },
+            "control": "verify_provider_credential",
+            "project_id": "linghui-ai-suite",
+            "runtime": "linghui-dashboard-agent",
+        },
+    )
+
+    response = await agent._process_message(message)
+
+    assert provider.verified_credentials == [("valid-key", "zhipu")]
+    assert response is not None
+    assert response.metadata == {
+        "control": "provider_credential_verified",
+        "verified": True,
+    }
+    assert "valid-key" not in json.dumps(response.metadata)
+
+
+@pytest.mark.asyncio
+async def test_runtime_emits_send_message_trace_before_final_response(
+    tmp_path: Path,
+) -> None:
+    bus = MessageBus()
+    provider = _SequenceProvider([LLMResponse(content="done")])
+    agent = AgentLoop(bus=bus, provider=provider, workspace=tmp_path)
+
+    await agent._process_and_publish_message(_message("trace-chat"))
+
+    trace = await bus.consume_outbound()
+    final = await bus.consume_outbound()
+    assert trace.content == "Send Message"
+    assert trace.metadata == {
+        "intermediate": True,
+        "phase": "message",
+        "terminal_action": "send_message",
+    }
+    assert final.content == "done"
 
 
 def test_trusted_analysis_tool_profile_exposes_no_domain_tools_by_default(
@@ -101,9 +334,7 @@ async def test_trusted_read_file_returns_audited_content_and_rejects_unapproved_
         analysis_conversation_id="conversation",
     )
 
-    result = json.loads(
-        await agent.tools.execute("read_file", {"path": str(uploaded_file)})
-    )
+    result = json.loads(await agent.tools.execute("read_file", {"path": str(uploaded_file)}))
     agent._set_tool_context(
         "web",
         "chat-run",
@@ -112,9 +343,7 @@ async def test_trusted_read_file_returns_audited_content_and_rejects_unapproved_
     cross_conversation = json.loads(
         await agent.tools.execute("read_file", {"path": str(uploaded_file)})
     )
-    denied = json.loads(
-        await agent.tools.execute("read_file", {"path": str(outside)})
-    )
+    denied = json.loads(await agent.tools.execute("read_file", {"path": str(outside)}))
 
     assert result["status"] == "ok"
     assert result["content"] == "批次 A123：待复核"
@@ -239,9 +468,7 @@ async def test_agent_response_preserves_run_and_conversation_identity(
 ) -> None:
     agent = AgentLoop(
         bus=MessageBus(),
-        provider=_SequenceProvider(
-            [LLMResponse(content="分析完成", finish_reason="stop")]
-        ),
+        provider=_SequenceProvider([LLMResponse(content="分析完成", finish_reason="stop")]),
         workspace=tmp_path,
     )
     message = InboundMessage(
@@ -295,8 +522,7 @@ async def test_tool_iteration_exhaustion_returns_support_error_code(
 
     assert response is not None
     assert response.content == (
-        "分析未完成。Error Code: ANALYST-RUNTIME-ITERATION-001。"
-        "请将此错误码提供给技术支持。"
+        "分析未完成。Error Code: ANALYST-RUNTIME-ITERATION-001。请将此错误码提供给技术支持。"
     )
     assert response.metadata["error_code"] == "ANALYST-RUNTIME-ITERATION-001"
 
@@ -614,9 +840,7 @@ async def test_length_continuation_never_sends_an_empty_assistant_message(
     )
     agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path)
 
-    result, _ = await agent._run_agent_loop(
-        [{"role": "user", "content": "do a long analysis"}]
-    )
+    result, _ = await agent._run_agent_loop([{"role": "user", "content": "do a long analysis"}])
 
     assert result == "finished"
     second_request = provider.calls[1]
@@ -657,9 +881,7 @@ async def test_agent_loop_aggregates_actual_provider_usage_across_iterations(
     )
     agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path)
 
-    result = await agent._run_agent_loop(
-        [{"role": "user", "content": "do a long analysis"}]
-    )
+    result = await agent._run_agent_loop([{"role": "user", "content": "do a long analysis"}])
 
     assert result.usage == {
         "prompt_tokens": 250,
@@ -742,9 +964,7 @@ async def test_active_context_is_compacted_after_token_threshold(
 async def test_trusted_analysis_does_not_launch_unmetered_model_maintenance(
     tmp_path: Path,
 ) -> None:
-    provider = _SequenceProvider(
-        [LLMResponse(content="finished", finish_reason="stop")]
-    )
+    provider = _SequenceProvider([LLMResponse(content="finished", finish_reason="stop")])
     agent = AgentLoop(
         bus=MessageBus(),
         provider=provider,
@@ -805,9 +1025,7 @@ async def test_trusted_analysis_new_session_does_not_call_consolidation_model(
 
 @pytest.mark.asyncio
 async def test_compaction_keeps_tool_call_and_result_together(tmp_path: Path) -> None:
-    provider = _SequenceProvider(
-        [LLMResponse(content="summary", finish_reason="stop")]
-    )
+    provider = _SequenceProvider([LLMResponse(content="summary", finish_reason="stop")])
     agent = AgentLoop(
         bus=MessageBus(),
         provider=provider,

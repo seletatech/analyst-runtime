@@ -22,6 +22,10 @@ This directory is the core Python runtime package. It should stay organized by r
 - `workspace/` for product-owned prompt, memory, and skill overlays
 - LLM or media providers declared under `analyst_runtime/analyst_runtime/providers/`
 - `docs/runbooks/` or product scripts when runtime behavior needs operator support
+- Vercel AI SDK packages (`ai`, `@ai-sdk/*`) are forbidden. Provider access goes through the
+  Python `LLMProvider` interface; frontend stream protocols are outside this package.
+- `model_profiles.py` is the single source of truth for product profile-to-provider/model
+  resolution. BYOK verification also goes through `LLMProvider`; gateways only forward it.
 
 ## Cleanup Guidance
 - Use this README to keep the boundary crisp; if neighboring directories feel interchangeable, that is a signal to rename, merge, or archive something.

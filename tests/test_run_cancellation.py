@@ -144,6 +144,36 @@ async def test_web_channel_publishes_cancel_control_to_the_agent_bus() -> None:
 
 
 @pytest.mark.asyncio
+async def test_web_channel_routes_credential_verification_to_runtime() -> None:
+    bus = MagicMock()
+    bus.publish_inbound = AsyncMock()
+    channel = WebChannel(
+        MagicMock(sandbox_id="test-sandbox", gateway_url="http://gateway"),
+        bus,
+    )
+
+    await channel._process_inbound(
+        {
+            "type": "provider_credential_verification",
+            "session_id": "chat-credential-123",
+            "content": "",
+            "metadata": {
+                "_provider_credential": {
+                    "api_key": "secret-key",
+                    "provider": "zhipu",
+                    "source": "byok",
+                },
+                "runtime": "linghui-dashboard-agent",
+            },
+        }
+    )
+
+    published = bus.publish_inbound.await_args.args[0]
+    assert published.metadata["control"] == "verify_provider_credential"
+    assert published.metadata["_provider_credential"]["provider"] == "zhipu"
+
+
+@pytest.mark.asyncio
 async def test_cancel_control_stops_the_active_chat_without_stopping_agent(
     tmp_path: Path,
 ) -> None:
@@ -276,9 +306,7 @@ async def test_cancelling_exec_terminates_its_subprocess(tmp_path: Path) -> None
         "time.sleep(30)"
     )
     command = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
-    task = asyncio.create_task(
-        ExecTool(timeout=60, working_dir=str(tmp_path)).execute(command)
-    )
+    task = asyncio.create_task(ExecTool(timeout=60, working_dir=str(tmp_path)).execute(command))
     child_pid: int | None = None
     try:
         for _ in range(100):

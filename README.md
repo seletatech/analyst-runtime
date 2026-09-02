@@ -27,6 +27,17 @@ endorsed by the NanoBot project.
 - `bridge/` contains optional channel bridges.
 - `tests/` contains the runtime contract and regression suite.
 
+Analyst Runtime is the only agent orchestrator in consuming products. It owns every model
+call, reasoning step, tool decision/execution, retry, session update, workspace read, and
+final message. UI frameworks may adapt its events for display but must not wrap it in a
+second agent loop.
+
+Vercel AI SDK (`ai` and `@ai-sdk/*`) is forbidden in this repository, including the optional
+Node channel bridges. Python provider access remains behind `LLMProvider`; product model
+selection arrives as a trusted profile ID and is resolved here to its provider/model. BYOK
+verification and model calls both remain behind the Runtime provider port. BYOK secrets must
+be removed from inbound metadata before any log, session event, trace, or outbound message.
+
 The active product workspace is supplied by the consuming repository. Its
 `SOUL.md` defines who the agent is, `AGENTS.md` defines how it works, and
 `workspace.json` selects optional runtime capabilities. Runtime state, customer

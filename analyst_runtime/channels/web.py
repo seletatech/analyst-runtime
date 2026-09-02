@@ -34,6 +34,7 @@ from analyst_runtime.channels.base import BaseChannel
 
 MSG_TYPE_USER_MESSAGE = "user_message"
 MSG_TYPE_CANCEL_REQUEST = "cancel_request"
+MSG_TYPE_PROVIDER_CREDENTIAL_VERIFICATION = "provider_credential_verification"
 MSG_TYPE_AGENT_RESPONSE = "agent_response"
 MSG_TYPE_AGENT_STATUS = "agent_status"
 MSG_TYPE_ERROR = "error"
@@ -73,6 +74,7 @@ def make_message(
 # WebChannel  (Analyst Runtime BaseChannel implementation)
 # ---------------------------------------------------------------------------
 
+
 class WebChannel(BaseChannel):
     """Bridge between the FastAPI gateway and Analyst Runtime's internal bus.
 
@@ -90,9 +92,8 @@ class WebChannel(BaseChannel):
             getattr(config, "gateway_url", None)
             or os.environ.get("GATEWAY_URL", "http://host.docker.internal:8000")
         ).rstrip("/")
-        self._gateway_token: str = (
-            getattr(config, "gateway_jwt_token", None)
-            or os.environ.get("GATEWAY_JWT_TOKEN", "")
+        self._gateway_token: str = getattr(config, "gateway_jwt_token", None) or os.environ.get(
+            "GATEWAY_JWT_TOKEN", ""
         )
         self._listener_task: asyncio.Task | None = None
 
@@ -156,8 +157,7 @@ class WebChannel(BaseChannel):
             logger.debug(f"Web channel -> outbound: {msg.content[:80]}")
             return {
                 "attachments": [
-                    {"name": item.get("name", ""), "status": "delivered"}
-                    for item in attachments
+                    {"name": item.get("name", ""), "status": "delivered"} for item in attachments
                 ]
             }
         except Exception as e:
@@ -179,7 +179,9 @@ class WebChannel(BaseChannel):
                     path = workspace / path
                 path = path.resolve()
                 if not path.is_relative_to(workspace):
-                    raise PermissionError("Attachments must be inside the Analyst Runtime workspace")
+                    raise PermissionError(
+                        "Attachments must be inside the Analyst Runtime workspace"
+                    )
                 if not path.is_file():
                     raise FileNotFoundError(f"Attachment does not exist: {path.name}")
                 media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
@@ -218,7 +220,9 @@ class WebChannel(BaseChannel):
         while self._running:
             try:
                 async with httpx.AsyncClient(trust_env=False) as client:
-                    resp = await client.get(url, headers=headers, timeout=35.0, params={"timeout": 30})
+                    resp = await client.get(
+                        url, headers=headers, timeout=35.0, params={"timeout": 30}
+                    )
 
                 if resp.status_code == 200:
                     payload = resp.json()
@@ -237,7 +241,9 @@ class WebChannel(BaseChannel):
                     await asyncio.sleep(2.0)
 
             except httpx.ConnectError:
-                logger.warning(f"Web channel: cannot reach gateway at {self._gateway_url}, retrying...")
+                logger.warning(
+                    f"Web channel: cannot reach gateway at {self._gateway_url}, retrying..."
+                )
                 await asyncio.sleep(3.0)
             except Exception as e:
                 logger.error(f"Web channel poll error: {e}")
@@ -248,9 +254,7 @@ class WebChannel(BaseChannel):
         msg_type = payload.get("type", "")
         content = payload.get("content", "")
         media: list[str] = list(payload.get("media", []))
-        session_id = str(
-            payload.get("session_id") or payload.get("correlation_id") or "unknown"
-        )
+        session_id = str(payload.get("session_id") or payload.get("correlation_id") or "unknown")
         run_id = str(payload.get("run_id") or session_id.removeprefix("chat-"))
         conversation_id = str(payload.get("conversation_id") or session_id)
         project_id = payload.get("project_id", "")
@@ -271,6 +275,25 @@ class WebChannel(BaseChannel):
             )
             return
 
+        if msg_type == MSG_TYPE_PROVIDER_CREDENTIAL_VERIFICATION:
+            await self.bus.publish_inbound(
+                InboundMessage(
+                    channel=self.name,
+                    sender_id=session_id,
+                    chat_id=session_id,
+                    content="",
+                    run_id=run_id,
+                    conversation_id=conversation_id,
+                    metadata={
+                        "project_id": project_id,
+                        "sandbox_id": self.sandbox_id,
+                        **metadata,
+                        "control": "verify_provider_credential",
+                    },
+                )
+            )
+            return
+
         if msg_type != MSG_TYPE_USER_MESSAGE:
             logger.debug(f"Web channel: ignoring non-user message type '{msg_type}'")
             return
@@ -279,22 +302,26 @@ class WebChannel(BaseChannel):
             logger.debug("Web channel: ignoring empty message with no media")
             return
 
-        logger.info(f"Web channel <- inbound [{session_id}]: {content[:80]}" +
-                    (f" (+{len(media)} media)" if media else ""))
+        logger.info(
+            f"Web channel <- inbound [{session_id}]: {content[:80]}"
+            + (f" (+{len(media)} media)" if media else "")
+        )
 
         if channel_override and channel_override != self.name:
             # Gateway routed a non-web message (e.g. Telegram) through the inbound pipe.
             # Publish with the correct source channel so the reply goes to TelegramChannel.
-            await self.bus.publish_inbound(InboundMessage(
-                channel=channel_override,
-                sender_id=session_id,
-                chat_id=session_id,   # session_id == Telegram chat_id (set by webhook handler)
-                content=content,
-                media=media,
-                metadata={"project_id": project_id, "sandbox_id": self.sandbox_id, **metadata},
-                run_id=run_id,
-                conversation_id=conversation_id,
-            ))
+            await self.bus.publish_inbound(
+                InboundMessage(
+                    channel=channel_override,
+                    sender_id=session_id,
+                    chat_id=session_id,  # session_id == Telegram chat_id (set by webhook handler)
+                    content=content,
+                    media=media,
+                    metadata={"project_id": project_id, "sandbox_id": self.sandbox_id, **metadata},
+                    run_id=run_id,
+                    conversation_id=conversation_id,
+                )
+            )
         else:
             await self._handle_message(
                 sender_id=session_id,
@@ -322,7 +349,8 @@ class WebChannel(BaseChannel):
         try:
             async with httpx.AsyncClient(trust_env=False) as client:
                 await client.post(
-                    url, json=payload,
+                    url,
+                    json=payload,
                     headers={"Authorization": f"Bearer {self._gateway_token}"},
                     timeout=5.0,
                 )

@@ -41,6 +41,7 @@ from analyst_runtime.bus.events import InboundMessage, OutboundMessage
 from analyst_runtime.bus.queue import MessageBus
 from analyst_runtime.config.schema import ExecToolConfig
 from analyst_runtime.cron.service import CronService
+from analyst_runtime.model_profiles import resolve_model_profile
 from analyst_runtime.profiles import RuntimeProfiles
 from analyst_runtime.profiles.types import ProfileTurnContext
 from analyst_runtime.providers.base import LLMProvider, LLMResponse
@@ -115,6 +116,8 @@ class AgentLoop:
 
     ITERATION_LIMIT_ERROR_CODE = "ANALYST-RUNTIME-ITERATION-001"
     TOOL_PROTOCOL_ERROR_CODE = "ANALYST-RUNTIME-PROTOCOL-001"
+    MODEL_PROFILE_ERROR_CODE = "ANALYST-RUNTIME-MODEL-001"
+    MODEL_CREDENTIAL_ERROR_CODE = "ANALYST-RUNTIME-CREDENTIAL-001"
 
     @classmethod
     def _support_error_message(cls, error_code: str) -> str:
@@ -239,9 +242,7 @@ class AgentLoop:
         if self.tool_profile == "readonly":
             return
         if self.tool_profile == "trusted-analysis":
-            self.tools.register(
-                ReadFileTool(allowed_dir=self.workspace, audit_results=True)
-            )
+            self.tools.register(ReadFileTool(allowed_dir=self.workspace, audit_results=True))
             self._register_message_tool()
             self.runtime_profiles.register_tools(self.tools)
             return
@@ -810,16 +811,18 @@ class AgentLoop:
                 item["text"] = f"{item.get('text', '')}\n\n{instruction}".strip()
                 return
 
+    def _is_trusted_gateway(self, msg: InboundMessage) -> bool:
+        trusted_gateway = self.workspace_configuration.trusted_gateway
+        return bool(
+            trusted_gateway is not None
+            and msg.channel == "web"
+            and msg.metadata.get("runtime") == trusted_gateway.runtime
+            and msg.metadata.get("project_id") == trusted_gateway.project_id
+        )
+
     def _trusted_gateway_system_instruction(self, msg: InboundMessage) -> str | None:
         """Accept policy metadata only from the workspace's trusted web runtime."""
-        trusted_gateway = self.workspace_configuration.trusted_gateway
-        if (
-            trusted_gateway is None
-            or
-            msg.channel != "web"
-            or msg.metadata.get("runtime") != trusted_gateway.runtime
-            or msg.metadata.get("project_id") != trusted_gateway.project_id
-        ):
+        if not self._is_trusted_gateway(msg):
             return None
         instruction = msg.metadata.get("trusted_system_instruction")
         if not isinstance(instruction, str) or not instruction.strip():
@@ -1488,6 +1491,21 @@ class AgentLoop:
                 async with self._message_semaphore:
                     response = await self._process_message(msg)
                     if response:
+                        if not response.metadata.get("control"):
+                            await self.bus.publish_outbound(
+                                OutboundMessage(
+                                    channel=response.channel,
+                                    chat_id=response.chat_id,
+                                    content="Send Message",
+                                    run_id=response.run_id,
+                                    conversation_id=response.conversation_id,
+                                    metadata={
+                                        "intermediate": True,
+                                        "phase": "message",
+                                        "terminal_action": "send_message",
+                                    },
+                                )
+                            )
                         await self.bus.publish_outbound(response)
         except asyncio.CancelledError:
             logger.info("Cancelled active chat run {}", msg.execution_key)
@@ -1534,6 +1552,34 @@ class AgentLoop:
         Returns:
             The response message, or None if no response needed.
         """
+        # Request credentials are trusted transport data, never conversation
+        # metadata. Remove them before logging, persistence, progress, or output.
+        request_credential = msg.metadata.pop("_provider_credential", None)
+        if not self._is_trusted_gateway(msg):
+            request_credential = None
+
+        if msg.metadata.get("control") == "verify_provider_credential":
+            verified = False
+            if isinstance(request_credential, dict):
+                api_key = request_credential.get("api_key")
+                provider_name = request_credential.get("provider")
+                if isinstance(api_key, str) and isinstance(provider_name, str):
+                    verified = await self.provider.verify_request_credentials(
+                        api_key=api_key,
+                        provider=provider_name,
+                    )
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content="",
+                run_id=msg.run_id,
+                conversation_id=msg.conversation_id,
+                metadata={
+                    "control": "provider_credential_verified",
+                    "verified": verified,
+                },
+            )
+
         # System messages route back via chat_id ("channel:chat_id")
         if msg.channel == "system":
             return await self._process_system_message(msg)
@@ -1782,7 +1828,40 @@ class AgentLoop:
                 )
             )
 
-        active_model = session.metadata.get("model") or self.model
+        trusted_profile = None
+        if self._is_trusted_gateway(msg):
+            profile_id = msg.metadata.get("model_profile_id")
+            if isinstance(profile_id, str):
+                try:
+                    trusted_profile = resolve_model_profile(profile_id)
+                except ValueError:
+                    logger.warning("Rejected unsupported model profile %r", profile_id)
+        if self._is_trusted_gateway(msg) and trusted_profile is None:
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=self._support_error_message(self.MODEL_PROFILE_ERROR_CODE),
+                run_id=msg.run_id,
+                conversation_id=msg.conversation_id,
+                metadata={"error_code": self.MODEL_PROFILE_ERROR_CODE},
+            )
+        if (
+            trusted_profile is not None
+            and isinstance(request_credential, dict)
+            and request_credential.get("provider") != trusted_profile.provider
+        ):
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=self._support_error_message(self.MODEL_CREDENTIAL_ERROR_CODE),
+                run_id=msg.run_id,
+                conversation_id=msg.conversation_id,
+                metadata={"error_code": self.MODEL_CREDENTIAL_ERROR_CODE},
+            )
+        trusted_model = trusted_profile.model if trusted_profile else None
+        # Model selection is frozen for this run and must not mutate the
+        # conversation session's configured default.
+        active_model = trusted_model or session.metadata.get("model") or self.model
 
         # Migrate stale model IDs stored before the bedrock/moonshotai prefix fix.
         # kimi-k2.5 used to be stored as "kimi-k2.5" (routes to Moonshot direct API,
@@ -1801,13 +1880,30 @@ class AgentLoop:
             session.metadata["model"] = migrated
             active_model = migrated
 
-        loop_result = await self._run_agent_loop(
-            initial_messages,
-            on_progress=on_progress or _bus_progress,
-            session=session,
-            request_uuid=request_uuid,
-            model=active_model,
-        )
+        credential_token = None
+        if isinstance(request_credential, dict):
+            api_key = request_credential.get("api_key")
+            provider_name = request_credential.get("provider")
+            if (
+                isinstance(api_key, str)
+                and api_key
+                and trusted_profile is not None
+                and provider_name == trusted_profile.provider
+            ):
+                credential_token = self.provider.set_request_credentials(
+                    api_key=api_key,
+                    provider=trusted_profile.provider,
+                )
+        try:
+            loop_result = await self._run_agent_loop(
+                initial_messages,
+                on_progress=on_progress or _bus_progress,
+                session=session,
+                request_uuid=request_uuid,
+                model=active_model,
+            )
+        finally:
+            self.provider.reset_request_credentials(credential_token)
         final_content, tools_used = loop_result
 
         terminal_error_code: str | None = None

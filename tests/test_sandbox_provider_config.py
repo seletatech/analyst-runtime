@@ -94,3 +94,32 @@ async def test_glm_5_3_flash_chat_keeps_required_parameters_through_litellm(
     }
     assert captured["temperature"] == 1.0
     assert captured["top_p"] == 0.95
+
+
+@pytest.mark.asyncio
+async def test_request_credentials_override_provider_only_for_current_task(monkeypatch) -> None:
+    captured: list[dict[str, object]] = []
+
+    async def fake_completion(**kwargs):
+        captured.append(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(finish_reason="stop", message=SimpleNamespace(content="ok", tool_calls=None))],
+            usage=None,
+        )
+
+    monkeypatch.setattr(litellm_provider_module, "acompletion", fake_completion)
+    provider = LiteLLMProvider(api_key="deployment-key", default_model="glm-5.3-flash")
+    token = provider.set_request_credentials(api_key="byok-key", provider="deepseek")
+    try:
+        await provider.chat(
+            [{"content": "one", "role": "user"}],
+            model="deepseek-v4-flash",
+        )
+    finally:
+        provider.reset_request_credentials(token)
+    await provider.chat([{"content": "two", "role": "user"}])
+
+    assert captured[0]["api_key"] == "byok-key"
+    assert captured[0]["api_base"] == "https://api.deepseek.com"
+    assert captured[0]["model"] == "deepseek/deepseek-v4-flash"
+    assert captured[1]["api_key"] == "deployment-key"
