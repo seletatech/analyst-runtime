@@ -47,9 +47,14 @@ verification and model calls both remain behind the Runtime provider port. BYOK 
 be removed from inbound metadata before any log, session event, trace, or outbound message.
 
 The active product workspace is supplied by the consuming repository. Its
-`SOUL.md` defines who the agent is, `AGENTS.md` defines how it works, and
-`workspace.json` selects optional runtime capabilities. Runtime state, customer
-data, prompts, and artifacts do not belong in this repository.
+`SOUL.md` defines who the agent is and `AGENTS.md` defines how it works. Runtime state,
+customer data, prompts, and artifacts do not belong in this repository.
+
+Linghui runs the `trusted-analysis` tool profile. It exposes workspace-scoped file and exec
+tools, Web/Firecrawl retrieval, and `message`. It does not expose MCP, Composio, external
+business integrations, audio/vision tools, `spawn`, `cron`, or manufacturing-semantics tools.
+Semantic confirmation is an ordinary system-prompt rule and
+continues through the same Analyst Runtime conversation.
 
 ## Development
 

@@ -1,4 +1,3 @@
 {
-  "schema_version": 1,
-  "runtime_profiles": ["manufacturing-semantics"]
+  "schema_version": 1
 }

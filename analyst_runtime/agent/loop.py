@@ -13,37 +13,21 @@ import json_repair
 from loguru import logger
 
 from analyst_runtime.agent.context import ContextBuilder
-from analyst_runtime.agent.skills import get_skill_read_roots
 from analyst_runtime.agent.subagent import SubagentManager
+from analyst_runtime.agent.tool_profiles import register_workspace_analysis_tools
 from analyst_runtime.agent.tools.analyze_image_tool import AnalyzeImageTool
 from analyst_runtime.agent.tools.cron import CronTool
-from analyst_runtime.agent.tools.filesystem import (
-    AppendFileTool,
-    EditFileTool,
-    ListDirTool,
-    PatchFileTool,
-    ReadFileTool,
-    WriteFileTool,
-)
-from analyst_runtime.agent.tools.firecrawl import (
-    FirecrawlBrowserTool,
-    FirecrawlScrapeTool,
-    FirecrawlSearchTool,
-)
+from analyst_runtime.agent.tools.filesystem import ReadFileTool
 from analyst_runtime.agent.tools.message import MessageTool
 from analyst_runtime.agent.tools.registry import ToolRegistry, register_integration_tools
-from analyst_runtime.agent.tools.shell import ExecTool
 from analyst_runtime.agent.tools.spawn import SpawnTool
 from analyst_runtime.agent.tools.transcription_tool import TranscribeAudioTool
 from analyst_runtime.agent.tools.tts_tool import TextToSpeechTool
-from analyst_runtime.agent.tools.web import WebFetchTool
 from analyst_runtime.bus.events import InboundMessage, OutboundMessage
 from analyst_runtime.bus.queue import MessageBus
 from analyst_runtime.config.schema import ExecToolConfig
 from analyst_runtime.cron.service import CronService
 from analyst_runtime.model_profiles import resolve_model_profile
-from analyst_runtime.profiles import RuntimeProfiles
-from analyst_runtime.profiles.types import ProfileTurnContext
 from analyst_runtime.providers.base import LLMProvider, LLMResponse
 from analyst_runtime.session.manager import HISTORY_SUMMARY_TYPE, Session, SessionManager
 from analyst_runtime.utils.tool_calls import sanitize_tool_name
@@ -164,13 +148,8 @@ class AgentLoop:
         self.restrict_to_workspace = restrict_to_workspace
         self.tool_profile = tool_profile
         self.workspace_configuration = WorkspaceConfiguration.load(workspace)
-        self.runtime_profiles = RuntimeProfiles(workspace, self.workspace_configuration)
-
         self.channel_manager = None  # set post-construction by the caller
-        self.context = ContextBuilder(
-            workspace,
-            protected_memory_sections=self.runtime_profiles.protected_memory_sections,
-        )
+        self.context = ContextBuilder(workspace, tool_profile=tool_profile)
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
         self.subagents = SubagentManager(
@@ -182,7 +161,7 @@ class AgentLoop:
             max_tokens=self.max_tokens,
             brave_api_key=brave_api_key,
             exec_config=self.exec_config,
-            restrict_to_workspace=restrict_to_workspace,
+            restrict_to_workspace=(restrict_to_workspace or tool_profile == "trusted-analysis"),
         )
 
         self.compress_after_turns = compress_after_turns
@@ -212,7 +191,6 @@ class AgentLoop:
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._message_semaphore = asyncio.Semaphore(self.max_concurrent_messages)
         self._pending_cancellations: set[str] = set()
-        self._profile_replay_task: asyncio.Task | None = None
         self.bus.add_inbound_listener(self._handle_inbound_control)
         self._register_default_tools()
 
@@ -244,69 +222,47 @@ class AgentLoop:
         if self.tool_profile == "readonly":
             return
         if self.tool_profile == "trusted-analysis":
-            self.tools.register(ReadFileTool(allowed_dir=self.workspace, audit_results=True))
-            self._register_message_tool()
-            self.runtime_profiles.register_tools(self.tools)
+            self._register_analysis_tools(restrict_to_workspace=True, audit_reads=True)
             return
 
-        # File tools (restrict to workspace if configured)
-        allowed_dir = self.workspace if self.restrict_to_workspace else None
-        allowed_read_dirs = (
-            get_skill_read_roots(self.workspace) if self.restrict_to_workspace else None
-        )
-        self.tools.register(ReadFileTool(allowed_dir=allowed_dir, allowed_dirs=allowed_read_dirs))
-        self.tools.register(WriteFileTool(allowed_dir=allowed_dir))
-        self.tools.register(AppendFileTool(allowed_dir=allowed_dir))
-        self.tools.register(PatchFileTool(allowed_dir=allowed_dir))
-        self.tools.register(EditFileTool(allowed_dir=allowed_dir))
-        self.tools.register(ListDirTool(allowed_dir=allowed_dir, allowed_dirs=allowed_read_dirs))
+        self._register_analysis_tools(restrict_to_workspace=self.restrict_to_workspace)
 
-        # Shell tool
-        self.tools.register(
-            ExecTool(
-                working_dir=str(self.workspace),
-                timeout=self.exec_config.timeout,
-                restrict_to_workspace=self.restrict_to_workspace,
-            )
-        )
-
-        # Web tools
-        self.tools.register(WebFetchTool())
-        self.tools.register(FirecrawlSearchTool())
-        self.tools.register(FirecrawlScrapeTool())
-        self.tools.register(FirecrawlBrowserTool())
-
-        # Message tool
-        self._register_message_tool()
-
-        self.runtime_profiles.register_tools(self.tools)
-
-        # Audio transcription and TTS (Groq — no-op if GROQ_API_KEY not set)
+        # Product profiles stop above. The generic full profile additionally exposes
+        # optional media and external-integration adapters.
         self.tools.register(TranscribeAudioTool())
         self.tools.register(
             TextToSpeechTool(self.workspace, send_callback=self.bus.publish_outbound)
         )
-
-        # Vision analysis for local image files (e.g. video frames)
         self.tools.register(AnalyzeImageTool())
-
-        # Spawn tool (for subagents)
-        spawn_tool = SpawnTool(manager=self.subagents)
-        self.tools.register(spawn_tool)
-
-        # Cron tool (for scheduling)
+        register_integration_tools(self.tools, workspace=self.workspace)
+        self.tools.register(SpawnTool(manager=self.subagents))
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
 
-        # Integration tools (Gmail, Calendar, Notion, YouTube, Maps, Slack, etc.)
-        register_integration_tools(self.tools, workspace=self.workspace)
+    def _register_analysis_tools(
+        self,
+        *,
+        restrict_to_workspace: bool,
+        audit_reads: bool = False,
+    ) -> None:
+        """Register the single Analyst Runtime capability set used by Linghui."""
+        register_workspace_analysis_tools(
+            self.tools,
+            workspace=self.workspace,
+            exec_config=self.exec_config,
+            restrict_to_workspace=restrict_to_workspace,
+            audit_reads=audit_reads,
+        )
+
+        # Message tool
+        self._register_message_tool()
 
     def _register_message_tool(self) -> None:
         self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
 
     async def _connect_mcp(self) -> None:
         """Connect to configured MCP servers (one-time, lazy)."""
-        if self.tool_profile == "readonly":
+        if self.tool_profile != "full":
             return
         if self._mcp_connected or not self._mcp_servers:
             return
@@ -348,18 +304,6 @@ class AgentLoop:
             if isinstance(read_file_tool, ReadFileTool):
                 read_file_tool.set_conversation_context(analysis_conversation_id)
 
-        self.runtime_profiles.set_tool_context(
-            ProfileTurnContext(
-                channel=channel,
-                chat_id=chat_id,
-                session_key=session_key,
-                user_message=user_message,
-                inbound_turn_id=inbound_turn_id,
-                analysis_conversation_id=analysis_conversation_id,
-                run_id=run_id,
-            )
-        )
-
         for tool_name in self.tools.tool_names:
             tool = self.tools.get(tool_name)
             if tool is None or not tool_name.startswith("composio_"):
@@ -374,6 +318,12 @@ class AgentLoop:
         """Merge metadata written by tools using their own session manager."""
         persisted = SessionManager(self.workspace).get_or_create(session.key)
         for key, value in persisted.metadata.items():
+            if self.tool_profile != "full" and key in {
+                _AWAITING_COMPOSIO_API_KEY,
+                _PENDING_COMPOSIO_USER_REQUEST,
+                "composio",
+            }:
+                continue
             if (
                 key in {_AWAITING_COMPOSIO_API_KEY, _PENDING_COMPOSIO_USER_REQUEST}
                 and self._composio_credentials_path().exists()
@@ -780,6 +730,8 @@ class AgentLoop:
         session.metadata.pop(_PENDING_COMPOSIO_USER_REQUEST, None)
 
     def _composio_bootstrap_instruction(self, session: Session, current_message: str) -> str | None:
+        if self.tool_profile != "full":
+            return None
         if not session.metadata.get(_AWAITING_COMPOSIO_API_KEY):
             return None
         if self._composio_credentials_path().exists():
@@ -865,7 +817,6 @@ class AgentLoop:
         _had_midtask_continuation = False  # one-shot: prevents infinite retry on text-only stops
         _delivery_recovery_attempts = 0  # bounded retries for missing final report bodies
         _completed_guarded_tool_calls: dict[str, str] = {}
-        profile_handoff_message: str | None = None
         terminal_reason = "iteration_limit"
         model_telemetry = RunModelTelemetry()
 
@@ -883,6 +834,10 @@ class AgentLoop:
 
             if response.has_tool_calls:
                 if on_progress:
+                    # Expose the agent-loop phase without leaking the provider's private
+                    # reasoning_content. Provider-authored public summaries, when present
+                    # in content, are emitted as the next progress item.
+                    await on_progress("Reason", None)
                     clean = self._strip_think(response.content)
                     if clean:
                         await on_progress(clean, None)
@@ -937,21 +892,7 @@ class AgentLoop:
                     )
                     parent_uuid = llm_uuid
 
-                profile_control_tools = self.runtime_profiles.control_tool_names
-                has_profile_control_call = any(
-                    sanitize_tool_name(tool_call.name) in profile_control_tools
-                    for tool_call in response.tool_calls
-                )
-                pre_execute_calls = (
-                    [
-                        tool_call
-                        for tool_call in response.tool_calls
-                        if sanitize_tool_name(tool_call.name) in profile_control_tools
-                    ]
-                    if has_profile_control_call
-                    else response.tool_calls
-                )
-                pre_results = await self.tools.pre_execute(pre_execute_calls)
+                pre_results = await self.tools.pre_execute(response.tool_calls)
 
                 if _malformed_names:
                     logger.warning(
@@ -978,13 +919,7 @@ class AgentLoop:
                     logger.info(f"Tool call: {sanitized_name}({args_str[:200]})")
                     if on_progress:
                         await on_progress(None, self._tool_progress(tool_call, "running"))
-                    if profile_handoff_message:
-                        result = self.runtime_profiles.skipped_after_handoff_result()
-                    elif has_profile_control_call and sanitized_name not in profile_control_tools:
-                        result = self.runtime_profiles.blocked_non_control_result(
-                            profile_control_tools
-                        )
-                    elif guarded_signature and guarded_signature in _completed_guarded_tool_calls:
+                    if guarded_signature and guarded_signature in _completed_guarded_tool_calls:
                         result = _completed_guarded_tool_calls[guarded_signature]
                         logger.warning(
                             "Suppressed duplicate successful external tool call in the same turn: {}",
@@ -1045,9 +980,6 @@ class AgentLoop:
                         )
                         parent_uuid = tr_uuid
 
-                    if handoff := self.runtime_profiles.handoff_message(sanitized_name, result):
-                        profile_handoff_message = handoff
-
                 steered_messages = await self._apply_pending_steers(
                     execution_key,
                     messages,
@@ -1056,32 +988,8 @@ class AgentLoop:
                 )
                 if steered_messages:
                     messages = steered_messages
-                    profile_handoff_message = None
                     final_content = None
                     continue
-
-                if profile_handoff_message:
-                    final_content = profile_handoff_message
-                    terminal_reason = "completed"
-                    if session and request_uuid:
-                        session.add_event(
-                            {
-                                "uuid": str(uuid.uuid4()),
-                                "parent_uuid": parent_uuid,
-                                "type": "final_response",
-                                "message_id": response.message_id,
-                                "model": active_model,
-                                "content": final_content,
-                                "reasoning": None,
-                                "usage": response.usage,
-                                "tools_used": tools_used,
-                                "iterations": iteration,
-                                "finish_reason": self.runtime_profiles.handoff_finish_reason(
-                                    profile_control_tools
-                                ),
-                            }
-                        )
-                    break
 
                 # If all tool calls are malformed ID-style names, count failures and
                 # inject a correction prompt so the model can retry.
@@ -1569,7 +1477,6 @@ class AgentLoop:
         logger.info("Agent loop started")
 
         while self._running:
-            self._schedule_profile_replay()
             try:
                 msg = await asyncio.wait_for(self.bus.consume_inbound(), timeout=1.0)
                 execution_key = msg.execution_key
@@ -1663,16 +1570,7 @@ class AgentLoop:
                         self._pending_cancellations.discard(execution_key)
                         message_task.cancel()
             except asyncio.TimeoutError:
-                self._schedule_profile_replay()
                 continue
-
-    def _schedule_profile_replay(self) -> None:
-        if self._profile_replay_task and not self._profile_replay_task.done():
-            return
-        self._profile_replay_task = self._track_task(self._replay_one_profile_event())
-
-    async def _replay_one_profile_event(self) -> None:
-        await self.runtime_profiles.replay_one(self.bus)
 
     async def _process_chat_queue(self, execution_key: str) -> None:
         """Process messages for one execution while other runs proceed independently."""
@@ -1806,7 +1704,9 @@ class AgentLoop:
 
         key = session_key or msg.session_key
         session = self.sessions.get_or_create(key)
-        if (
+        if self.tool_profile != "full":
+            self._clear_composio_api_key_pending(session)
+        elif (
             session.metadata.get(_AWAITING_COMPOSIO_API_KEY)
             and self._composio_credentials_path().exists()
         ):
@@ -2182,7 +2082,6 @@ class AgentLoop:
         outbound_metadata["model"] = active_model
         if terminal_error_code:
             outbound_metadata["error_code"] = terminal_error_code
-        self.runtime_profiles.enrich_outbound_metadata(outbound_metadata)
         if msg.channel == "telegram":
             final_content, chips = self._extract_action_chips(final_content)
             if chips:

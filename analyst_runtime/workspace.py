@@ -21,7 +21,6 @@ class TrustedGatewayConfiguration:
 class WorkspaceConfiguration:
     """Configuration that travels with a product workspace."""
 
-    runtime_profiles: tuple[str, ...] = ()
     trusted_gateway: TrustedGatewayConfiguration | None = None
 
     @classmethod
@@ -34,11 +33,6 @@ class WorkspaceConfiguration:
             raise ValueError(f"{path} must contain a JSON object")
         if data.get("schema_version") != 1:
             raise ValueError(f"{path} schema_version must be 1")
-        profiles = data.get("runtime_profiles", [])
-        if not isinstance(profiles, list) or not all(
-            isinstance(profile, str) and profile.strip() for profile in profiles
-        ):
-            raise ValueError(f"{path} runtime_profiles must be a list of names")
         trusted_gateway = data.get("trusted_gateway")
         parsed_gateway = None
         if trusted_gateway is not None:
@@ -55,6 +49,5 @@ class WorkspaceConfiguration:
                 project_id=project_id.strip(),
             )
         return cls(
-            runtime_profiles=tuple(dict.fromkeys(profile.strip() for profile in profiles)),
             trusted_gateway=parsed_gateway,
         )

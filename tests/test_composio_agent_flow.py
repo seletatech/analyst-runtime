@@ -745,3 +745,35 @@ async def test_agent_loop_does_not_enter_composio_bootstrap_mode_for_normal_foll
 
     assert provider.system_prompts
     assert "The user's current message is their Composio API key." not in provider.system_prompts[-1]
+
+
+@pytest.mark.asyncio
+async def test_trusted_analysis_ignores_and_clears_legacy_composio_session_state(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    provider = FakePromptCaptureProvider()
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=provider,
+        workspace=workspace,
+        tool_profile="trusted-analysis",
+    )
+    session = agent.sessions.get_or_create("web:chat-1")
+    session.metadata["awaiting_composio_api_key"] = True
+    session.metadata["pending_composio_user_request"] = "Send Alice an email."
+    agent.sessions.save(session)
+
+    await agent.process_direct(
+        "cmp_test_key_1234567890",
+        session_key="web:chat-1",
+        channel="web",
+        chat_id="chat-1",
+    )
+
+    assert provider.system_prompts
+    assert "Composio Bootstrap" not in provider.system_prompts[-1]
+    refreshed = agent.sessions.get_or_create("web:chat-1")
+    assert "awaiting_composio_api_key" not in refreshed.metadata
+    assert "pending_composio_user_request" not in refreshed.metadata

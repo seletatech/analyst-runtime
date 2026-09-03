@@ -34,16 +34,8 @@ def _resolve_writable_path(path: str, allowed_dir: Path | None = None) -> Path:
     is_memory_file = (
         resolved.name.casefold() == "memory.md" and resolved.parent.name.casefold() == "memory"
     )
-    is_confirmation_journal = any(
-        parent.name.casefold() == "confirmation-intents"
-        and parent.parent.name.casefold() == "memory"
-        for parent in (resolved, *resolved.parents)
-    )
-    if is_memory_file or is_confirmation_journal:
-        raise PermissionError(
-            "Project semantic memory is managed by MemoryStore and "
-            "ConfirmationIntentJournal and cannot be changed with generic file tools"
-        )
+    if is_memory_file:
+        raise PermissionError("Project memory is managed by MemoryStore and is read-only")
     return resolved
 
 
@@ -91,21 +83,22 @@ class ReadFileTool(Tool):
             if self._audit_results and self._has_symlink_component(Path(path).expanduser()):
                 return self._audit_error("denied", path, read_at, "Symbolic links are not allowed")
             file_path = _resolve_path(path, self._allowed_dir, self._allowed_dirs)
+            audit_upload = self._audit_results and self._is_workspace_upload(file_path)
             if not file_path.exists():
                 return (
                     self._audit_error("not_found", path, read_at, "File not found")
-                    if self._audit_results
+                    if audit_upload
                     else f"Error: File not found: {path}"
                 )
             if not file_path.is_file():
                 return (
                     self._audit_error("denied", path, read_at, "Not a file")
-                    if self._audit_results
+                    if audit_upload
                     else f"Error: Not a file: {path}"
                 )
 
             content_bytes = file_path.read_bytes()
-            if self._audit_results:
+            if audit_upload:
                 return self._audited_content(file_path, content_bytes, read_at)
             return content_bytes.decode("utf-8")
         except PermissionError as e:
@@ -120,6 +113,15 @@ class ReadFileTool(Tool):
                 if self._audit_results
                 else f"Error reading file: {str(e)}"
             )
+
+    def _is_workspace_upload(self, candidate: Path) -> bool:
+        if self._allowed_dir is None:
+            return False
+        try:
+            relative = candidate.relative_to(self._allowed_dir.resolve())
+        except ValueError:
+            return False
+        return bool(relative.parts) and relative.parts[0].casefold() == "uploads"
 
     @staticmethod
     def _has_symlink_component(candidate: Path) -> bool:

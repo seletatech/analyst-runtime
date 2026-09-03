@@ -26,8 +26,10 @@ class ContextBuilder:
         workspace: Path,
         minimal: bool | None = None,
         protected_memory_sections: tuple[ProtectedMemorySection, ...] = (),
+        tool_profile: str = "full",
     ):
         self.workspace = workspace
+        self.tool_profile = tool_profile
         self.minimal = (
             os.environ.get("ANALYST_RUNTIME_MINIMAL_WORKSPACE", "").casefold()
             in {"1", "true", "yes"}
@@ -95,6 +97,31 @@ Skills with available="false" need dependencies installed first - you can try in
         system = platform.system()
         runtime = f"{'macOS' if system == 'Darwin' else system} {platform.machine()}, Python {platform.python_version()}"
 
+        delivery_instructions = """IMPORTANT: When responding to direct questions or conversations, reply directly with your text response.
+Only use the 'message' tool when you need channel-specific delivery."""
+        if self.tool_profile == "readonly":
+            delivery_instructions = (
+                "IMPORTANT: Respond directly with text. This profile exposes no tools."
+            )
+
+        optional_full_profile_instructions = ""
+        if self.tool_profile == "full":
+            optional_full_profile_instructions = """
+For scheduled reminders, use the 'cron' tool directly. Do not call shell commands like `analyst_runtime cron ...` via exec.
+
+When working in Aura, if you finish a standalone HTML artifact meant for the user to view, call `show_in_ui` with that relative HTML path before your final response.
+Only do this for finished viewable HTML artifacts, not scratch files, temporary files, or partial drafts.
+"""
+
+        file_instructions = ""
+        if self.tool_profile != "readonly":
+            file_instructions = """
+For large generated files such as HTML, CSS, JS, JSON, Markdown, or long plain text:
+- prefer `append_file` in smaller chunks instead of sending the whole file in one `write_file` call
+- use `patch_file` to repair selected sections after reading or generating the file
+- keep `write_file` for small or simple full-file writes
+"""
+
         return f"""You are a tool-using assistant running inside an isolated workspace.
 The workspace `SOUL.md` defines the product identity and `AGENTS.md` defines durable operating rules.
 Follow those files and active skills ahead of generic conversational habits.
@@ -116,18 +143,9 @@ Your workspace is at: {workspace_path}
 - History log: {workspace_path}/memory/HISTORY.md (grep-searchable)
 - Custom skills: {workspace_path}/skills/{{skill-name}}/SKILL.md
 
-IMPORTANT: When responding to direct questions or conversations, reply directly with your text response.
-Only use the 'message' tool when you need channel-specific delivery.
-For normal conversation, reply with text by default, but use the 'message' tool when you need to send media, files, or other attachments back to the current chat.
-For scheduled reminders, use the 'cron' tool directly. Do not call shell commands like `analyst_runtime cron ...` via exec.
-
-For large generated files such as HTML, CSS, JS, JSON, Markdown, or long plain text:
-- prefer `append_file` in smaller chunks instead of sending the whole file in one `write_file` call
-- use `patch_file` to repair selected sections after reading or generating the file
-- keep `write_file` for small or simple full-file writes
-
-When working in Aura, if you finish a standalone HTML artifact meant for the user to view, call `show_in_ui` with that relative HTML path before your final response.
-Only do this for finished viewable HTML artifacts, not scratch files, temporary files, or partial drafts.
+{delivery_instructions}
+{file_instructions}
+{optional_full_profile_instructions}
 """
 
     def _load_bootstrap_files(self) -> str:
@@ -227,19 +245,9 @@ Only do this for finished viewable HTML artifacts, not scratch files, temporary 
                 images.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
             elif mime and mime.startswith("audio/"):
                 label = "voice message" if path.endswith(".ogg") else "audio file"
-                media_hints.append(
-                    f"[{label}: {path}] — use the transcribe_audio tool to understand this"
-                )
+                media_hints.append(f"[{label}: {path}]")
             elif mime and mime.startswith("video/"):
-                media_hints.append(
-                    f"[video file: {path}] — process this video completely in ONE turn without stopping: "
-                    f"(1) exec ffmpeg to extract audio (e.g. -vn -acodec libopus audio.ogg), "
-                    f"(2) call transcribe_audio on the extracted audio, "
-                    f"(3) exec ffmpeg to extract a frame (e.g. -ss 00:00:01 -vframes 1 frame.jpg), "
-                    f"(4) call analyze_image on the extracted frame, "
-                    f"then reply with BOTH the transcription AND the image analysis. "
-                    f"Do NOT stop after any single step or send a partial 'I will now...' message — complete all steps first."
-                )
+                media_hints.append(f"[video file: {path}]")
             elif p.is_file():
                 media_hints.append(f"[file: {path}]")
 

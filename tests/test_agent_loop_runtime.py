@@ -356,19 +356,6 @@ async def test_runtime_persists_steer_id_before_acknowledging_it(tmp_path: Path)
     assert acknowledgement.metadata["control"] == "steer_applied"
 
 
-def test_trusted_analysis_tool_profile_exposes_no_domain_tools_by_default(
-    tmp_path: Path,
-) -> None:
-    agent = AgentLoop(
-        bus=MessageBus(),
-        provider=_SequenceProvider([]),
-        workspace=tmp_path,
-        tool_profile="trusted-analysis",
-    )
-
-    assert set(agent.tools.tool_names) == {"message", "read_file"}
-
-
 @pytest.mark.asyncio
 async def test_trusted_read_file_returns_audited_content_and_rejects_unapproved_paths(
     tmp_path: Path,
@@ -426,6 +413,25 @@ async def test_trusted_read_file_returns_audited_content_and_rejects_unapproved_
     assert result["read_at"].endswith("Z")
     assert cross_conversation["status"] == "denied"
     assert denied["status"] == "denied"
+
+
+@pytest.mark.asyncio
+async def test_trusted_read_file_reads_built_in_business_data_without_upload_manifest(
+    tmp_path: Path,
+) -> None:
+    business_file = tmp_path / "data" / "production-records" / "record.json"
+    business_file.parent.mkdir(parents=True)
+    business_file.write_text('{"product":"HUD-70538"}', encoding="utf-8")
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=_SequenceProvider([]),
+        workspace=tmp_path,
+        tool_profile="trusted-analysis",
+    )
+
+    result = await agent.tools.execute("read_file", {"path": str(business_file)})
+
+    assert result == '{"product":"HUD-70538"}'
 
 
 @pytest.mark.asyncio
@@ -515,12 +521,7 @@ async def test_readonly_tool_profile_exposes_no_tools_or_mcp(tmp_path: Path) -> 
     assert agent._mcp_connected is False
 
 
-def test_workspace_can_enable_manufacturing_semantics_profile(tmp_path: Path) -> None:
-    (tmp_path / "workspace.json").write_text(
-        '{"schema_version":1,"runtime_profiles":["manufacturing-semantics"]}',
-        encoding="utf-8",
-    )
-
+def test_trusted_analysis_profile_exposes_only_product_agent_tools(tmp_path: Path) -> None:
     agent = AgentLoop(
         bus=MessageBus(),
         provider=_SequenceProvider([]),
@@ -529,11 +530,55 @@ def test_workspace_can_enable_manufacturing_semantics_profile(tmp_path: Path) ->
     )
 
     assert set(agent.tools.tool_names) == {
-        "message",
         "read_file",
+        "write_file",
+        "append_file",
+        "patch_file",
+        "edit_file",
+        "list_dir",
+        "exec",
+        "web_fetch",
+        "firecrawl_search",
+        "firecrawl_scrape",
+        "firecrawl_browser",
+        "message",
+    }
+    assert not {
         "propose_manufacturing_semantics",
         "confirm_manufacturing_semantics",
-    }
+        "transcribe_audio",
+        "text_to_speech",
+        "analyze_image",
+        "composio_search_tools",
+        "composio_manage_connections",
+        "composio_execute_tools",
+        "gateway_auth",
+        "notion",
+        "youtube",
+        "google_maps",
+        "slack",
+        "teams",
+        "spawn",
+        "cron",
+    }.intersection(agent.tools.tool_names)
+
+
+@pytest.mark.asyncio
+async def test_trusted_analysis_spawned_tools_remain_workspace_scoped(tmp_path: Path) -> None:
+    outside = tmp_path.parent / "outside-secret.txt"
+    outside.write_text("secret", encoding="utf-8")
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=_SequenceProvider([]),
+        workspace=tmp_path,
+        tool_profile="trusted-analysis",
+    )
+
+    tools = agent.subagents._build_tools()
+    result = await tools.execute("read_file", {"path": str(outside)})
+
+    assert result.startswith("Error:")
+    assert "outside allowed" in result
 
 
 @pytest.mark.asyncio

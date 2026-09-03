@@ -40,7 +40,11 @@ def _system_text(messages: list[dict]) -> str:
 
 
 def test_linghui_system_prompt_is_focused_and_within_budget() -> None:
-    prompt = ContextBuilder(WORKSPACE, minimal=True).build_system_prompt()
+    prompt = ContextBuilder(
+        WORKSPACE,
+        minimal=True,
+        tool_profile="trusted-analysis",
+    ).build_system_prompt()
 
     assert "经营分析助手" in prompt
     assert "管理决策" in prompt
@@ -49,6 +53,9 @@ def test_linghui_system_prompt_is_focused_and_within_budget() -> None:
     assert "linghui-manufacturing-data-analyst" not in prompt
     assert "review_packet" not in prompt
     assert "source_manifest" not in prompt
+    assert "'cron' tool" not in prompt
+    assert "show_in_ui" not in prompt
+    assert "media, files, or other attachments" not in prompt
     assert len(prompt) < 12_000
 
 
@@ -73,12 +80,13 @@ def test_minimal_system_prompt_loads_project_long_term_memory(tmp_path: Path) ->
 def test_linghui_prompt_requires_semantic_confirmation_before_analysis() -> None:
     prompt = ContextBuilder(WORKSPACE, minimal=True).build_system_prompt()
 
-    assert "数据语义确认卡" in prompt
-    assert "propose_manufacturing_semantics" in prompt
+    assert "待确认的定义与口径" in prompt
     assert "确认并按上述口径分析" in prompt
     assert "确认前不得读取业务数据、执行计算或给出分析数值" in prompt
-    assert "confirm_manufacturing_semantics" in prompt
-    assert "确认写入长期记忆成功后" in prompt
+    assert "在同一段正常对话中继续分析" in prompt
+    assert "propose_manufacturing_semantics" not in prompt
+    assert "confirm_manufacturing_semantics" not in prompt
+    assert "后台分析任务" not in prompt
     assert "defect-loss:HUD-70538" in prompt
     assert "material-lot-association:release-film" in prompt
     assert "离型膜 2025-08-28 来料与 2026-01-23 特采关联" in prompt

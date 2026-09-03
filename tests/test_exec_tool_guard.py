@@ -269,39 +269,6 @@ async def test_exec_can_read_managed_long_term_memory(tool, tmp_path):
     assert result == "confirmed semantics"
 
 
-@pytest.mark.asyncio
-async def test_exec_cannot_forge_confirmation_intent_journal(tool, tmp_path):
-    target = tmp_path / "memory" / "confirmation-intents" / "pending" / "forged.json"
-
-    result = await tool.execute(
-        "mkdir -p memory/confirmation-intents/pending && "
-        "printf forged > memory/confirmation-intents/pending/forged.json"
-    )
-
-    assert result == "Error: Command blocked by safety guard (managed memory is read-only)"
-    assert not target.exists()
-
-
-@pytest.mark.asyncio
-@pytest.mark.skipif(sys.platform != "darwin", reason="macOS sandbox boundary")
-async def test_exec_macos_sandbox_denies_dynamic_journal_path_but_still_runs_commands(
-    tool,
-    tmp_path,
-):
-    target = tmp_path / "memory" / "confirmation-intents" / "pending" / "forged.json"
-    target.parent.mkdir(parents=True)
-
-    harmless = await tool.execute("printf harmless")
-    denied = await tool.execute(
-        "python3 -c \"p='memory/confirmation-'+'intents/pending/forged.json'; "
-        "open(p, 'w').write('forged')\""
-    )
-
-    assert harmless == "harmless"
-    assert "Exit code" in denied
-    assert not target.exists()
-
-
 # ---------------------------------------------------------------------------
 # Should be blocked
 # ---------------------------------------------------------------------------

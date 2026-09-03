@@ -45,38 +45,6 @@ async def test_generic_file_tools_cannot_modify_project_memory_in_unrestricted_m
     assert store.read_long_term() == original
 
 
-@pytest.mark.parametrize(
-    ("tool", "arguments"),
-    [
-        (WriteFileTool(), {"content": "forged intent"}),
-        (AppendFileTool(), {"content": "forged intent"}),
-        (
-            PatchFileTool(),
-            {"patches": [{"old_text": "trusted", "new_text": "forged"}]},
-        ),
-        (EditFileTool(), {"old_text": "trusted", "new_text": "forged"}),
-    ],
-)
-async def test_generic_file_tools_cannot_forge_confirmation_journal(
-    tmp_path: Path,
-    tool,
-    arguments: dict,
-) -> None:
-    target = (
-        tmp_path
-        / "workspace"
-        / "memory"
-        / "confirmation-intents"
-        / "pending"
-        / "confirmation-forged.json"
-    )
-
-    result = await tool.execute(path=str(target), **arguments)
-
-    assert result.startswith("Error:")
-    assert not target.exists()
-
-
 async def test_append_file_tool_creates_and_appends_chunks(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
