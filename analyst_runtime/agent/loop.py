@@ -769,6 +769,8 @@ class AgentLoop:
         if not evidence.startswith("analysis_id="):
             return parent_uuid
         analysis_id = evidence.removeprefix("analysis_id=")
+        if session.metadata.get("active_analysis_id") == analysis_id:
+            return parent_uuid
         try:
             self.analysis_artifacts.load(analysis_id)
         except AnalysisArtifactError as error:

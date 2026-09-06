@@ -399,6 +399,37 @@ def test_analysis_store_rejects_content_that_does_not_match_identity(tmp_path: P
         AnalysisArtifactStore(tmp_path).load(analysis_id)
 
 
+def test_reloading_the_active_analysis_does_not_create_a_second_context_event(
+    tmp_path: Path,
+) -> None:
+    artifact = {
+        "schema_version": "linghui-pqc-defect-loss/v1",
+        "status": "complete",
+        "request": {"product": "HUD-70538"},
+        "population": {"final_disposition_net_loss_m": 695},
+    }
+    digest = hashlib.sha256(
+        json.dumps(artifact, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    analysis_id = f"pqc-defect-loss:{digest}"
+    artifact["analysis_id"] = analysis_id
+    artifact_path = tmp_path / "artifacts" / "analyses" / "pqc-defect-loss" / f"{digest}.json"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_text(json.dumps(artifact, ensure_ascii=False), encoding="utf-8")
+    agent = AgentLoop(bus=MessageBus(), provider=_SequenceProvider([]), workspace=tmp_path)
+    session = agent.sessions.get_or_create("web:same-conversation")
+    session.metadata["active_analysis_id"] = analysis_id
+
+    parent_uuid = agent._bind_analysis_context(
+        session,
+        json.dumps(artifact, ensure_ascii=False),
+        parent_uuid="tool-result",
+    )
+
+    assert parent_uuid == "tool-result"
+    assert not [event for event in session.events if event.get("type") == "analysis_context"]
+
+
 @pytest.mark.asyncio
 async def test_runtime_trace_records_context_compaction_and_retry(tmp_path: Path) -> None:
     (tmp_path / "workspace.json").write_text('{"schema_version":1}', encoding="utf-8")
