@@ -26,6 +26,7 @@ class _SequenceProvider(LLMProvider):
         super().__init__()
         self.responses = responses
         self.calls: list[list[dict[str, Any]]] = []
+        self.tool_sets: list[list[dict[str, Any]] | None] = []
         self.models: list[str | None] = []
         self.request_credentials: list[str] = []
         self.request_providers: list[str | None] = []
@@ -62,6 +63,7 @@ class _SequenceProvider(LLMProvider):
         temperature: float = 0.7,
     ) -> LLMResponse:
         self.calls.append(messages)
+        self.tool_sets.append(tools)
         self.models.append(model)
         return self.responses.pop(0)
 
@@ -91,12 +93,12 @@ class _StaticAnalysisExec(Tool):
         return json.dumps(self.result, ensure_ascii=False)
 
 
-def _message(chat_id: str) -> InboundMessage:
+def _message(chat_id: str, content: str | None = None) -> InboundMessage:
     return InboundMessage(
         channel="web",
         sender_id=chat_id,
         chat_id=chat_id,
-        content=f"question for {chat_id}",
+        content=content or f"question for {chat_id}",
     )
 
 
@@ -266,7 +268,12 @@ async def test_runtime_binds_completed_analysis_and_reuses_it_in_the_same_conver
     agent.tools.register(_StaticAnalysisExec(artifact))
 
     first = await agent._process_message(_message("same-conversation"))
-    second = await agent._process_message(_message("same-conversation"))
+    second = await agent._process_message(
+        _message(
+            "same-conversation",
+            "确认沿用上一轮完整口径和刚才得到的结果，所有范围均不变。",
+        )
+    )
 
     assert first is not None
     assert second is not None
@@ -301,7 +308,16 @@ async def test_runtime_binds_completed_analysis_and_reuses_it_in_the_same_conver
     assert "695" in json.dumps(provider.calls[2], ensure_ascii=False)
     assert "do not search chat sessions" in json.dumps(provider.calls[2]).lower()
     assert "does not approve access to new business data" in json.dumps(provider.calls[2]).lower()
+    assert provider.tool_sets[2] == []
     assert len(provider.calls) == 3
+
+
+def test_analysis_reuse_intent_requires_explicit_prior_and_unchanged_language() -> None:
+    assert AgentLoop._explicit_analysis_reuse(
+        "确认沿用上一轮完整口径和刚才得到的结果，所有范围均不变。"
+    )
+    assert not AgentLoop._explicit_analysis_reuse("请分析这个问题的原因")
+    assert not AgentLoop._explicit_analysis_reuse("沿用行业常见方法重新计算")
 
 
 def test_analysis_store_rejects_content_that_does_not_match_identity(tmp_path: Path) -> None:

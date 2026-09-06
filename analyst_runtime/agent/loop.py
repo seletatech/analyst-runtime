@@ -118,6 +118,20 @@ class AgentLoop:
         ).encode()
         return hashlib.sha256(encoded).hexdigest()
 
+    @staticmethod
+    def _explicit_analysis_reuse(content: str) -> bool:
+        """Recognize an explicit request to keep using the prior result unchanged."""
+        compact = re.sub(r"\s+", "", content)
+        prior_markers = ("上一轮", "上一次", "上次", "刚才", "已有", "原有")
+        reuse_markers = ("沿用", "继续使用", "保持", "基于")
+        result_markers = ("结果", "分析", "口径", "范围")
+        unchanged_markers = ("不变", "相同", "同一")
+        references_prior = any(marker in compact for marker in prior_markers)
+        requests_reuse = any(marker in compact for marker in reuse_markers)
+        names_reused_state = any(marker in compact for marker in result_markers)
+        says_unchanged = any(marker in compact for marker in unchanged_markers)
+        return references_prior and requests_reuse and names_reused_state and says_unchanged
+
     def _runtime_provenance(self) -> dict[str, str]:
         def file_hash(relative_path: str) -> str:
             path = self.workspace / relative_path
@@ -768,10 +782,10 @@ class AgentLoop:
         session: Session,
         *,
         parent_uuid: str,
-    ) -> str | None:
+    ) -> tuple[str | None, bool]:
         analysis_id = session.metadata.get("active_analysis_id")
         if not isinstance(analysis_id, str):
-            return None
+            return None, False
         try:
             payload = self.analysis_artifacts.load(analysis_id)
         except AnalysisArtifactError as error:
@@ -779,7 +793,8 @@ class AgentLoop:
             return (
                 "A prior analysis is referenced by this conversation, but its approved "
                 "artifact is unavailable. Do not reuse numeric claims from chat history. "
-                "Explain that the analysis must be run again before quoting a result."
+                "Explain that the analysis must be run again before quoting a result.",
+                False,
             )
 
         session.add_event(
@@ -791,7 +806,7 @@ class AgentLoop:
                 "analysis_id": analysis_id,
             }
         )
-        return self.analysis_artifacts.system_instruction(payload)
+        return self.analysis_artifacts.system_instruction(payload), True
 
     @staticmethod
     def _guarded_tool_call_signature(name: str, arguments: Any) -> str | None:
@@ -1012,6 +1027,7 @@ class AgentLoop:
         request_uuid: str | None = None,
         model: str | None = None,
         execution_key: str | None = None,
+        allow_tools: bool = True,
     ) -> AgentLoopResult:
         """
         Run the agent iteration loop.
@@ -1060,7 +1076,7 @@ class AgentLoop:
 
             response = await self.provider.chat(
                 messages=messages,
-                tools=self.tools.get_definitions(),
+                tools=self.tools.get_definitions() if allow_tools else [],
                 model=active_model,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
@@ -2197,10 +2213,11 @@ class AgentLoop:
             }
         )
 
-        analysis_instruction = self._reuse_analysis_context(
+        analysis_instruction, active_analysis_available = self._reuse_analysis_context(
             session,
             parent_uuid=request_uuid,
         )
+        reuse_only = active_analysis_available and self._explicit_analysis_reuse(msg.content)
 
         bootstrap_instruction = self._composio_bootstrap_instruction(session, msg.content)
         initial_messages = self.context.build_messages(
@@ -2227,7 +2244,7 @@ class AgentLoop:
                 "parent_uuid": request_uuid,
                 "type": "prompt_snapshot",
                 "content": system_content,
-                "tools": self.tools.get_definitions(),
+                "tools": self.tools.get_definitions() if not reuse_only else [],
             }
         )
 
@@ -2331,6 +2348,7 @@ class AgentLoop:
                 request_uuid=request_uuid,
                 model=active_model,
                 execution_key=msg.execution_key,
+                allow_tools=not reuse_only,
             )
         finally:
             self.provider.reset_request_credentials(credential_token)
