@@ -93,6 +93,19 @@ class _StaticAnalysisExec(Tool):
         return json.dumps(self.result, ensure_ascii=False)
 
 
+class _AnalysisAndProcessExec(_StaticAnalysisExec):
+    def __init__(self, result: dict[str, Any]) -> None:
+        super().__init__(result)
+        self.commands: list[str] = []
+
+    async def execute(self, **kwargs: Any) -> str:
+        command = str(kwargs.get("command") or "")
+        self.commands.append(command)
+        if command == "run approved analysis":
+            return await super().execute(**kwargs)
+        return json.dumps({"status": "complete", "finding": "process evidence"})
+
+
 def _message(chat_id: str, content: str | None = None) -> InboundMessage:
     return InboundMessage(
         channel="web",
@@ -261,11 +274,22 @@ async def test_runtime_binds_completed_analysis_and_reuses_it_in_the_same_conver
                 ],
             ),
             LLMResponse(content="最终结论：净损耗为 695 米。"),
-            LLMResponse(content="沿用上次分析，净损耗仍为 695 米。"),
+            LLMResponse(
+                content=None,
+                tool_calls=[
+                    ToolCallRequest(
+                        id="process-1",
+                        name="exec",
+                        arguments={"command": "inspect process records"},
+                    )
+                ],
+            ),
+            LLMResponse(content="最终结论：沿用上次分析，净损耗仍为 695 米；过程证据已核对。"),
         ]
     )
     agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path)
-    agent.tools.register(_StaticAnalysisExec(artifact))
+    exec_tool = _AnalysisAndProcessExec(artifact)
+    agent.tools.register(exec_tool)
 
     first = await agent._process_message(_message("same-conversation"))
     second = await agent._process_message(
@@ -283,14 +307,14 @@ async def test_runtime_binds_completed_analysis_and_reuses_it_in_the_same_conver
         "active_analysis_id": analysis_id
     }
     tool_history = [message for message in persisted.get_history() if message.get("role") == "tool"]
-    assert tool_history == [
-        {
-            "role": "tool",
-            "tool_call_id": "analysis-1",
-            "name": "exec",
-            "content": f"analysis_id={analysis_id}",
-        }
-    ]
+    assert tool_history[0] == {
+        "role": "tool",
+        "tool_call_id": "analysis-1",
+        "name": "exec",
+        "content": f"analysis_id={analysis_id}",
+    }
+    assert tool_history[1]["tool_call_id"] == "process-1"
+    assert exec_tool.commands == ["run approved analysis", "inspect process records"]
     assert "example-roll" not in json.dumps(tool_history)
     assert any(
         event["type"] == "analysis_context"
@@ -308,9 +332,16 @@ async def test_runtime_binds_completed_analysis_and_reuses_it_in_the_same_conver
     assert "695" in json.dumps(provider.calls[2], ensure_ascii=False)
     assert "do not search chat sessions" in json.dumps(provider.calls[2]).lower()
     assert "does not approve access to new business data" in json.dumps(provider.calls[2]).lower()
-    assert "interpretation-only turn" in json.dumps(provider.calls[2]).lower()
-    assert provider.tool_sets[2] == []
-    assert len(provider.calls) == 3
+    reuse_prompt = json.dumps(provider.calls[2]).lower()
+    assert "keep the active analysis unchanged as the numeric baseline" in reuse_prompt
+    assert "tools remain available for genuinely new follow-up analysis" in reuse_prompt
+    assert provider.tool_sets[2]
+    assert {tool["function"]["name"] for tool in provider.tool_sets[2]} >= {"exec"}
+    assert any(
+        event["type"] == "tool_result" and event["tool_name"] == "exec"
+        for event in second.metadata["trace_summary"]
+    )
+    assert len(provider.calls) == 4
 
 
 def test_analysis_reuse_intent_requires_explicit_prior_and_unchanged_language() -> None:

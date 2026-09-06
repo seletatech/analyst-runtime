@@ -2217,7 +2217,7 @@ class AgentLoop:
             session,
             parent_uuid=request_uuid,
         )
-        reuse_only = active_analysis_available and self._explicit_analysis_reuse(msg.content)
+        reuse_requested = active_analysis_available and self._explicit_analysis_reuse(msg.content)
 
         bootstrap_instruction = self._composio_bootstrap_instruction(session, msg.content)
         initial_messages = self.context.build_messages(
@@ -2229,14 +2229,16 @@ class AgentLoop:
         )
         self._append_system_instruction(initial_messages, bootstrap_instruction)
         self._append_system_instruction(initial_messages, analysis_instruction)
-        if reuse_only:
+        if reuse_requested:
             self._append_system_instruction(
                 initial_messages,
                 "The user explicitly asked to keep the prior analysis scope and result "
-                "unchanged. This is an interpretation-only turn: answer now from the active "
-                "approved analysis and explicitly restate its net-loss result. No tools are "
-                "available. Do not announce future data access, recalculation, or additional "
-                "investigation.",
+                "unchanged. Keep the active analysis unchanged as the numeric baseline and "
+                "explicitly restate its net-loss result. Do not rerun or replace that approved "
+                "calculation. Tools remain available for genuinely new follow-up analysis, "
+                "such as investigating process evidence against the fixed population. If the "
+                "user requested that work and confirmed its scope, perform it now; do not merely "
+                "announce future data access or investigation.",
             )
         self._append_system_instruction(
             initial_messages,
@@ -2253,7 +2255,7 @@ class AgentLoop:
                 "parent_uuid": request_uuid,
                 "type": "prompt_snapshot",
                 "content": system_content,
-                "tools": self.tools.get_definitions() if not reuse_only else [],
+                "tools": self.tools.get_definitions(),
             }
         )
 
@@ -2357,7 +2359,7 @@ class AgentLoop:
                 request_uuid=request_uuid,
                 model=active_model,
                 execution_key=msg.execution_key,
-                allow_tools=not reuse_only,
+                allow_tools=True,
             )
         finally:
             self.provider.reset_request_credentials(credential_token)
