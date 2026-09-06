@@ -118,7 +118,9 @@ def _message(chat_id: str, content: str | None = None) -> InboundMessage:
 @pytest.mark.asyncio
 async def test_trusted_run_model_and_byok_are_request_scoped_and_never_echoed(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv("DEEPSEEK_V4_FLASH_PROVIDER", raising=False)
     (tmp_path / "workspace.json").write_text(
         json.dumps(
             {

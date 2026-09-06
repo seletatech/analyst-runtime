@@ -20,6 +20,7 @@ _SECRET_ENV_VARS: frozenset[str] = frozenset(
         "AWS_BEARER_TOKEN_BEDROCK",
         "CLOUDFLARED_TUNNEL_TOKEN",
         "DEEPSEEK_API_KEY",
+        "NVIDIA_API_KEY",
         "GATEWAY_JWT_TOKEN",
         "ANALYST_RUNTIME_GATEWAY_TOKEN",
         "OPENAI_API_KEY",

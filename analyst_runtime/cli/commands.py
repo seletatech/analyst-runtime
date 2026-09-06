@@ -84,6 +84,9 @@ def _resolve_consolidation_model(llm_provider: str) -> str | None:
             return None
         return raw if raw.startswith("deepseek/") else f"deepseek/{raw}"
 
+    if llm_provider == "nvidia":
+        return raw or None
+
     if llm_provider == "zhipu":
         if not raw:
             return None
@@ -99,6 +102,7 @@ def _resolve_sandbox_model(llm_provider: str) -> str:
         "openrouter": "openai/gpt-4o-mini",
         "tokenhub": "glm-5.3-flash",
         "deepseek": "deepseek-chat",
+        "nvidia": "deepseek-ai/deepseek-v4-flash-0731",
         "openai": "gpt-4o-mini",
         "zhipu": "glm-5.3-flash",
     }
@@ -125,6 +129,9 @@ def _resolve_sandbox_model(llm_provider: str) -> str:
 
     if llm_provider == "deepseek":
         return raw_model_id if raw_model_id.startswith("deepseek/") else f"deepseek/{raw_model_id}"
+
+    if llm_provider == "nvidia":
+        return raw_model_id
 
     if llm_provider == "openai":
         return raw_model_id
@@ -734,7 +741,15 @@ def sandbox():
     workspace_path = Path(os.environ.get("WORKSPACE_PATH", "/workspace"))
     llm_provider = os.environ.get("LLM_PROVIDER", "bedrock").strip().lower()
     llm_provider = {"bigmodel": "zhipu", "zai": "zhipu"}.get(llm_provider, llm_provider)
-    if llm_provider in {"bedrock", "openrouter", "tokenhub", "deepseek", "openai", "zhipu"}:
+    if llm_provider in {
+        "bedrock",
+        "openrouter",
+        "tokenhub",
+        "nvidia",
+        "deepseek",
+        "openai",
+        "zhipu",
+    }:
         model = _resolve_sandbox_model(llm_provider)
     else:
         logger.warning("Unknown LLM_PROVIDER=%s, falling back to openrouter", llm_provider)
@@ -795,6 +810,12 @@ def sandbox():
                 "apiKey": os.environ.get("TOKENHUB_API_KEY", ""),
                 "apiBase": os.environ.get(
                     "TOKENHUB_BASE_URL", "https://tokenhub.tencentmaas.com/v1"
+                ),
+            },
+            "nvidia": {
+                "apiKey": os.environ.get("NVIDIA_API_KEY", ""),
+                "apiBase": os.environ.get(
+                    "NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1"
                 ),
             },
             "deepseek": {

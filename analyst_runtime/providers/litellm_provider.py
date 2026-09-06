@@ -107,7 +107,13 @@ class LiteLLMProvider(LLMProvider):
     async def verify_request_credentials(self, *, api_key: str, provider: str) -> bool:
         """Verify BYOK without moving provider HTTP behavior into the Web or API."""
         spec = find_by_name(provider)
-        if spec is None or provider not in {"deepseek", "openrouter", "tokenhub", "zhipu"}:
+        if spec is None or provider not in {
+            "deepseek",
+            "nvidia",
+            "openrouter",
+            "tokenhub",
+            "zhipu",
+        }:
             return False
         base_url = spec.default_api_base.rstrip("/")
         if not base_url:
@@ -186,7 +192,10 @@ class LiteLLMProvider(LLMProvider):
     def _apply_model_overrides(self, model: str, kwargs: dict[str, Any]) -> None:
         """Apply model-specific parameter overrides from the registry."""
         model_lower = model.lower()
-        spec = find_by_model(model)
+        request_credentials = _request_credentials.get()
+        request_provider = request_credentials[2] if request_credentials else None
+        spec = find_by_name(request_provider) if request_provider else self._gateway
+        spec = spec or find_by_model(model)
         if spec:
             for pattern, overrides in spec.model_overrides:
                 if pattern in model_lower:
@@ -312,6 +321,7 @@ class LiteLLMProvider(LLMProvider):
             return None
         env_names = {
             "deepseek": "DEEPSEEK_BASE_URL",
+            "nvidia": "NVIDIA_BASE_URL",
             "openrouter": "OPENROUTER_BASE_URL",
             "tokenhub": "TOKENHUB_BASE_URL",
             "zhipu": "ZAI_BASE_URL",

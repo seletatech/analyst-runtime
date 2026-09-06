@@ -75,6 +75,25 @@ def test_glm_profile_rejects_unknown_provider(monkeypatch) -> None:
         resolve_model_profile("glm-5.3-flash")
 
 
+def test_deepseek_profile_can_route_to_nvidia_without_changing_product_model_id(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("DEEPSEEK_V4_FLASH_PROVIDER", "nvidia")
+
+    profile = resolve_model_profile("deepseek-chat")
+
+    assert profile.id == "deepseek-chat"
+    assert profile.provider == "nvidia"
+    assert profile.model == "deepseek-ai/deepseek-v4-flash-0731"
+
+
+def test_nvidia_sandbox_uses_openai_compatible_model_id(monkeypatch) -> None:
+    monkeypatch.delenv("AGENT_MODEL", raising=False)
+    monkeypatch.delenv("LLM_MODEL_ID", raising=False)
+
+    assert _resolve_sandbox_model("nvidia") == "deepseek-ai/deepseek-v4-flash-0731"
+
+
 def test_zhipu_model_aliases_are_not_double_prefixed(monkeypatch) -> None:
     monkeypatch.setenv("LLM_MODEL_ID", "zai/glm-5.3-flash")
 
@@ -220,3 +239,46 @@ async def test_tokenhub_request_credentials_route_one_task_to_tokenhub(monkeypat
     assert captured[0]["api_key"] == "tokenhub-key"
     assert captured[0]["api_base"] == "https://tokenhub.tencentmaas.com/v1"
     assert captured[0]["model"] == "openai/glm-5.3-flash"
+
+
+@pytest.mark.asyncio
+async def test_nvidia_request_credentials_apply_gateway_route_and_reasoning_parameters(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_completion(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason="stop", message=SimpleNamespace(content="ok", tool_calls=None)
+                )
+            ],
+            usage=None,
+        )
+
+    monkeypatch.setattr(litellm_provider_module, "acompletion", fake_completion)
+    provider = LiteLLMProvider(
+        api_key="deployment-key",
+        default_model="openrouter/z-ai/glm-5.3-flash",
+        provider_name="openrouter",
+    )
+    token = provider.set_request_credentials(api_key="nvidia-key", provider="nvidia")
+    try:
+        await provider.chat(
+            [{"content": "one", "role": "user"}],
+            model="deepseek-ai/deepseek-v4-flash-0731",
+        )
+    finally:
+        provider.reset_request_credentials(token)
+
+    assert captured["api_key"] == "nvidia-key"
+    assert captured["api_base"] == "https://integrate.api.nvidia.com/v1"
+    assert captured["model"] == "openai/deepseek-ai/deepseek-v4-flash-0731"
+    assert captured["temperature"] == 1.0
+    assert captured["top_p"] == 0.95
+    assert captured["max_tokens"] == 16384
+    assert captured["extra_body"] == {
+        "chat_template_kwargs": {"thinking": True, "reasoning_effort": "high"}
+    }
