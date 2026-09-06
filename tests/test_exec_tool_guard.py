@@ -150,14 +150,42 @@ async def test_exec_extracts_sealed_evidence_from_safely_truncated_json(tool):
     assert AgentLoop._tool_result_evidence(result) == f"artifact_id={artifact_id}"
 
 
+def test_exec_extracts_case_neutral_pqc_analysis_identity() -> None:
+    analysis_id = "pqc-defect-loss:" + "a" * 64
+    result = json.dumps(
+        {
+            "schema_version": "linghui-pqc-defect-loss/v1",
+            "status": "complete",
+            "analysis_id": analysis_id,
+            "population": {"final_disposition_net_loss_m": 1},
+        }
+    )
+
+    assert AgentLoop._tool_result_evidence(result) == f"analysis_id={analysis_id}"
+
+
+@pytest.mark.asyncio
+async def test_exec_preserves_pqc_analysis_identity_when_result_is_truncated(tool) -> None:
+    analysis_id = "pqc-defect-loss:" + "b" * 64
+    command = (
+        "python3 -c 'import json; print(json.dumps({"
+        f'"analysis_id":"{analysis_id}",'
+        '"schema_version":"linghui-pqc-defect-loss/v1",'
+        '"status":"complete","padding":"x"*30000}))\''
+    )
+
+    result = await tool.execute(command)
+
+    assert "... (truncated" in result
+    assert AgentLoop._tool_result_evidence(result) == f"analysis_id={analysis_id}"
+
+
 def test_output_scrubs_provider_and_channel_credentials(tool, monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-secret")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "telegram-secret")
     monkeypatch.setenv("ZAI_API_KEY", "bigmodel-secret")
 
-    scrubbed = tool._scrub_output(
-        "deepseek-secret telegram-secret bigmodel-secret"
-    )
+    scrubbed = tool._scrub_output("deepseek-secret telegram-secret bigmodel-secret")
 
     assert "deepseek-secret" not in scrubbed
     assert "telegram-secret" not in scrubbed

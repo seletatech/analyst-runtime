@@ -87,10 +87,10 @@ def test_linghui_prompt_requires_semantic_confirmation_before_analysis() -> None
     assert "propose_manufacturing_semantics" not in prompt
     assert "confirm_manufacturing_semantics" not in prompt
     assert "后台分析任务" not in prompt
-    assert "defect-loss:HUD-70538" in prompt
-    assert "material-lot-association:release-film" in prompt
-    assert "离型膜 2025-08-28 来料与 2026-01-23 特采关联" in prompt
-    assert "离型膜 1 月 23 日异常与 8 月 28 日用料关联" not in prompt
+    assert "不良、良率、检验、判定、隔离、客诉" in prompt
+    assert "PQC、OQC、IQC、良率或客诉资料" in prompt
+    assert "生产记录只用于补充批次谱系、生产过程和交叉核验" in prompt
+    assert "70538" not in (WORKSPACE / "AGENTS.md").read_text(encoding="utf-8")
 
 
 def test_every_analysis_prompt_requires_user_visible_business_semantics_confirmation() -> None:
@@ -117,7 +117,7 @@ def test_every_analysis_answer_leads_with_applied_definitions_and_scope() -> Non
     assert "歧义记录的处理方式" in prompt
 
 
-def test_base_prompt_carries_confirmed_wrinkle_class_definition_without_memory(
+def test_base_prompt_carries_generic_defect_loss_contract_without_case_fixture(
     tmp_path: Path,
 ) -> None:
     workspace = tmp_path / "workspace"
@@ -129,10 +129,11 @@ def test_base_prompt_carries_confirmed_wrinkle_class_definition_without_memory(
 
     prompt = ContextBuilder(workspace, minimal=True).build_system_prompt()
 
-    assert "已确认的褶皱类定义" in prompt
-    assert "默认包含 `褶皱`、`抬头纹`、`斜纹`" in prompt
-    assert "默认排除 `压印`、`白点`、`基材异常`" in prompt
-    assert "Composite Defect Record" in prompt
+    assert "对不良或损耗问题" in prompt
+    assert "纳入/排除类别、组合缺陷如何处理" in prompt
+    assert "跨记录和跨工序如何去重" in prompt
+    assert "什么最终判定与处理方式才算净损耗" in prompt
+    assert "70538" not in prompt
 
 
 def test_explicit_skill_names_are_loaded_without_all_workspace_skills(tmp_path: Path) -> None:

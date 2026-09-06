@@ -17,6 +17,12 @@ def test_zhipu_sandbox_defaults_to_glm_5_3_flash(monkeypatch) -> None:
     assert _resolve_sandbox_model("zhipu") == "zai/glm-5.3-flash"
 
 
+def test_openrouter_glm_5_3_flash_uses_gateway_route(monkeypatch) -> None:
+    monkeypatch.setenv("LLM_MODEL_ID", "z-ai/glm-5.3-flash")
+
+    assert _resolve_sandbox_model("openrouter") == "openrouter/z-ai/glm-5.3-flash"
+
+
 def test_zhipu_model_aliases_are_not_double_prefixed(monkeypatch) -> None:
     monkeypatch.setenv("LLM_MODEL_ID", "zai/glm-5.3-flash")
 
@@ -103,7 +109,11 @@ async def test_request_credentials_override_provider_only_for_current_task(monke
     async def fake_completion(**kwargs):
         captured.append(kwargs)
         return SimpleNamespace(
-            choices=[SimpleNamespace(finish_reason="stop", message=SimpleNamespace(content="ok", tool_calls=None))],
+            choices=[
+                SimpleNamespace(
+                    finish_reason="stop", message=SimpleNamespace(content="ok", tool_calls=None)
+                )
+            ],
             usage=None,
         )
 

@@ -80,7 +80,7 @@ def test_workspace_contains_only_minimal_prompt_and_business_data() -> None:
     assert {"AGENTS.md", "SOUL.md", "workspace.json", "data"}.issubset(entries)
     tracked = set(
         subprocess.check_output(
-            ["git", "ls-files", "workspace"],
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard", "workspace"],
             cwd=REPO_ROOT,
             text=True,
         ).splitlines()
@@ -89,11 +89,12 @@ def test_workspace_contains_only_minimal_prompt_and_business_data() -> None:
         "workspace/.gitignore",
         "workspace/AGENTS.md",
         "workspace/SOUL.md",
+        "workspace/bin/analyze_pqc_defect_loss.py",
         "workspace/workspace.json",
         "workspace/data/README.md",
     }
     assert not (WORKSPACE / "skills").exists()
-    assert not list(WORKSPACE.rglob("*.py"))
+    assert list(WORKSPACE.rglob("*.py")) == [WORKSPACE / "bin/analyze_pqc_defect_loss.py"]
 
 
 def test_prompt_is_management_focused_without_fixed_metric_checklist() -> None:

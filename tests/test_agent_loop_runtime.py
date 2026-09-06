@@ -9,12 +9,14 @@ from typing import Any
 import pytest
 
 from analyst_runtime.agent.loop import AgentLoop
+from analyst_runtime.agent.tools.base import Tool
 from analyst_runtime.agent.tools.message import MessageTool
 from analyst_runtime.bus.events import InboundMessage, OutboundMessage
 from analyst_runtime.bus.queue import MessageBus
 from analyst_runtime.config.schema import AgentDefaults
 from analyst_runtime.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from analyst_runtime.providers.litellm_provider import LiteLLMProvider
+from analyst_runtime.session.manager import SessionManager
 
 
 class _SequenceProvider(LLMProvider):
@@ -60,6 +62,31 @@ class _SequenceProvider(LLMProvider):
         self.calls.append(messages)
         self.models.append(model)
         return self.responses.pop(0)
+
+
+class _StaticAnalysisExec(Tool):
+    def __init__(self, result: dict[str, Any]) -> None:
+        self.result = result
+
+    @property
+    def name(self) -> str:
+        return "exec"
+
+    @property
+    def description(self) -> str:
+        return "Return one completed analysis artifact."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        del kwargs
+        return json.dumps(self.result, ensure_ascii=False)
 
 
 def _message(chat_id: str) -> InboundMessage:
@@ -118,6 +145,186 @@ async def test_trusted_run_model_and_byok_are_request_scoped_and_never_echoed(
     assert response is not None
     assert "_provider_credential" not in response.metadata
     assert "byok-secret" not in json.dumps(response.metadata)
+
+
+@pytest.mark.asyncio
+async def test_runtime_returns_sanitized_trace_and_workspace_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "workspace.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "trusted_gateway": {
+                    "project_id": "linghui-ai-suite",
+                    "runtime": "linghui-dashboard-agent",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "AGENTS.md").write_text("safe prompt", encoding="utf-8")
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "manifest.json").write_text('{"release":"test"}', encoding="utf-8")
+    monkeypatch.setenv("ANALYST_RUNTIME_VERSION", "a" * 40)
+    monkeypatch.setenv("ANALYST_RUNTIME_IMAGE_DIGEST", "example/image@sha256:" + "b" * 64)
+    provider = _SequenceProvider(
+        [
+            LLMResponse(
+                content="done",
+                usage={"prompt_tokens": 10, "completion_tokens": 2},
+            )
+        ]
+    )
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=provider,
+        workspace=tmp_path,
+        tool_profile="trusted-analysis",
+    )
+    message = InboundMessage(
+        channel="web",
+        sender_id="user",
+        chat_id="chat-run",
+        content="private business question",
+        run_id="run-1",
+        conversation_id="conversation-1",
+        metadata={
+            "model_profile_id": "glm-5.3-flash",
+            "project_id": "linghui-ai-suite",
+            "runtime": "linghui-dashboard-agent",
+        },
+    )
+
+    response = await agent._process_message(message)
+
+    assert response is not None
+    provenance = response.metadata["runtime_provenance"]
+    assert provenance["product_commit"] == "a" * 40
+    assert provenance["image_digest"] == "example/image@sha256:" + "b" * 64
+    assert provenance["tool_profile"] == "trusted-analysis"
+    assert len(provenance["agents_md_sha256"]) == 64
+    assert len(provenance["workspace_data_manifest_sha256"]) == 64
+    trace = response.metadata["trace_summary"]
+    assert [event["type"] for event in trace] == [
+        "user_input",
+        "prompt_snapshot",
+        "model_call",
+        "final_response",
+    ]
+    assert trace[-2]["model"] == "glm-5.3-flash"
+    assert trace[-2]["usage"] == {"prompt_tokens": 10, "completion_tokens": 2}
+    assert "private business question" not in json.dumps(trace)
+    assert "safe prompt" not in json.dumps(trace)
+
+
+@pytest.mark.asyncio
+async def test_runtime_binds_completed_analysis_and_reuses_it_in_the_same_conversation(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "workspace.json").write_text('{"schema_version":1}', encoding="utf-8")
+    analysis_id = "pqc-defect-loss:" + "a" * 64
+    artifact = {
+        "schema_version": "linghui-pqc-defect-loss/v1",
+        "status": "complete",
+        "analysis_id": analysis_id,
+        "request": {"product": "HUD-70538", "start_month": "2025-01", "end_month": "2026-07"},
+        "population": {
+            "final_disposition_net_loss_m": 695,
+            "terminal_roll_count": 24,
+            "observation_total_m": 1915,
+            "excluded_missing_lineage_m": 75,
+        },
+    }
+    artifact_path = tmp_path / "artifacts" / "analyses" / "pqc-defect-loss" / f"{'a' * 64}.json"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_text(json.dumps(artifact, ensure_ascii=False), encoding="utf-8")
+    provider = _SequenceProvider(
+        [
+            LLMResponse(
+                content=None,
+                tool_calls=[
+                    ToolCallRequest(
+                        id="analysis-1",
+                        name="exec",
+                        arguments={"command": "run approved analysis"},
+                    )
+                ],
+            ),
+            LLMResponse(content="最终结论：净损耗为 695 米。"),
+            LLMResponse(content="沿用上次分析，净损耗仍为 695 米。"),
+        ]
+    )
+    agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path)
+    agent.tools.register(_StaticAnalysisExec(artifact))
+
+    first = await agent._process_message(_message("same-conversation"))
+    second = await agent._process_message(_message("same-conversation"))
+
+    assert first is not None
+    assert second is not None
+    persisted = agent.sessions.get_or_create("web:same-conversation")
+    assert persisted.metadata == {"active_analysis_id": analysis_id}
+    assert SessionManager(tmp_path).get_or_create("web:same-conversation").metadata == {
+        "active_analysis_id": analysis_id
+    }
+    assert any(
+        event["type"] == "analysis_context"
+        and event["mode"] == "created"
+        and event["analysis_id"] == analysis_id
+        for event in first.metadata["trace_summary"]
+    )
+    assert any(
+        event["type"] == "analysis_context"
+        and event["mode"] == "reused"
+        and event["analysis_id"] == analysis_id
+        for event in second.metadata["trace_summary"]
+    )
+    assert analysis_id in json.dumps(provider.calls[2], ensure_ascii=False)
+    assert "695" in json.dumps(provider.calls[2], ensure_ascii=False)
+    assert "do not search chat sessions" in json.dumps(provider.calls[2]).lower()
+    assert "does not approve access to new business data" in json.dumps(provider.calls[2]).lower()
+    assert len(provider.calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_runtime_trace_records_context_compaction_and_retry(tmp_path: Path) -> None:
+    (tmp_path / "workspace.json").write_text('{"schema_version":1}', encoding="utf-8")
+    provider = _SequenceProvider(
+        [
+            LLMResponse(
+                content="partial",
+                finish_reason="length",
+                usage={"prompt_tokens": 100, "completion_tokens": 5},
+            ),
+            LLMResponse(
+                content="compacted summary",
+                usage={"prompt_tokens": 20, "completion_tokens": 3},
+            ),
+            LLMResponse(
+                content="done",
+                usage={"prompt_tokens": 30, "completion_tokens": 2},
+            ),
+        ]
+    )
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=provider,
+        workspace=tmp_path,
+        context_compact_threshold=1,
+        context_compact_keep_messages=1,
+    )
+
+    response = await agent._process_message(_message("trace-run"))
+
+    assert response is not None
+    trace = response.metadata["trace_summary"]
+    assert [event["type"] for event in trace].count("model_call") == 2
+    assert any(
+        event["type"] == "context_compaction" and event["prompt_tokens"] == 100 for event in trace
+    )
+    assert any(event["type"] == "retry" and event["reason"] == "output_length" for event in trace)
 
 
 @pytest.mark.asyncio

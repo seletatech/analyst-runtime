@@ -1,7 +1,9 @@
 """Agent loop: the core processing engine."""
 
 import asyncio
+import hashlib
 import json
+import os
 import re
 import uuid
 from contextlib import AsyncExitStack
@@ -12,6 +14,7 @@ from typing import Any, Awaitable, Callable, Literal
 import json_repair
 from loguru import logger
 
+from analyst_runtime.agent.analysis_context import AnalysisArtifactError, AnalysisArtifactStore
 from analyst_runtime.agent.context import ContextBuilder
 from analyst_runtime.agent.subagent import SubagentManager
 from analyst_runtime.agent.tool_profiles import register_workspace_analysis_tools
@@ -40,6 +43,7 @@ _MONTHLY_ARTIFACT_ID_RE = re.compile(
     r"monthly-event-reconciliation:"
     r"\d{4}-(?:0[1-9]|1[0-2]):[0-9a-f]{12}"
 )
+_PQC_ANALYSIS_ID_RE = re.compile(r"pqc-defect-loss:[0-9a-f]{64}")
 
 ProgressTool = dict[str, str]
 ProgressCallback = Callable[[str | None, ProgressTool | str | None], Awaitable[None]]
@@ -107,6 +111,125 @@ class AgentLoop:
     def _support_error_message(cls, error_code: str) -> str:
         return f"分析未完成。Error Code: {error_code}。请将此错误码提供给技术支持。"
 
+    @staticmethod
+    def _content_sha256(value: Any) -> str:
+        encoded = json.dumps(
+            value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
+        ).encode()
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _runtime_provenance(self) -> dict[str, str]:
+        def file_hash(relative_path: str) -> str:
+            path = self.workspace / relative_path
+            return (
+                hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "unavailable"
+            )
+
+        return {
+            "product_commit": os.environ.get("ANALYST_RUNTIME_VERSION", "unavailable"),
+            "image_digest": os.environ.get("ANALYST_RUNTIME_IMAGE_DIGEST", "unavailable"),
+            "tool_profile": self.tool_profile,
+            "agents_md_sha256": file_hash("AGENTS.md"),
+            "workspace_data_manifest_sha256": file_hash("data/manifest.json"),
+        }
+
+    @classmethod
+    def _trace_summary(cls, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Return span-ready telemetry without prompts, reasoning, or business payloads."""
+        summary: list[dict[str, Any]] = []
+        for event in events:
+            event_type = str(event.get("type") or "")
+            base = {
+                "type": event_type,
+                "timestamp": event.get("timestamp"),
+                "uuid": event.get("uuid"),
+                "parent_uuid": event.get("parent_uuid"),
+            }
+            if event_type == "user_input":
+                summary.append(
+                    {**base, "content_sha256": cls._content_sha256(event.get("content"))}
+                )
+            elif event_type == "prompt_snapshot":
+                tools = event.get("tools") if isinstance(event.get("tools"), list) else []
+                summary.append(
+                    {
+                        **base,
+                        "prompt_sha256": cls._content_sha256(event.get("content")),
+                        "prompt_chars": len(str(event.get("content") or "")),
+                        "tools_sha256": cls._content_sha256(tools),
+                        "tool_count": len(tools),
+                    }
+                )
+            elif event_type == "model_call":
+                tool_calls = event.get("tool_calls")
+                names = []
+                if isinstance(tool_calls, list):
+                    names = [
+                        str(call.get("function", {}).get("name") or "")
+                        for call in tool_calls
+                        if isinstance(call, dict) and isinstance(call.get("function"), dict)
+                    ]
+                summary.append(
+                    {
+                        **base,
+                        "model": event.get("model"),
+                        "iteration": event.get("iteration"),
+                        "finish_reason": event.get("finish_reason"),
+                        "usage": event.get("usage") or {},
+                        "tool_names": names,
+                    }
+                )
+            elif event_type == "tool_result":
+                summary.append(
+                    {
+                        **base,
+                        "tool_call_id": event.get("tool_use_id"),
+                        "tool_name": event.get("tool_name"),
+                        "input_sha256": cls._content_sha256(event.get("tool_input")),
+                        "output_sha256": cls._content_sha256(event.get("content")),
+                        "status": "completed",
+                    }
+                )
+            elif event_type == "analysis_context":
+                summary.append(
+                    {
+                        **base,
+                        "mode": event.get("mode"),
+                        "analysis_id": event.get("analysis_id"),
+                    }
+                )
+            elif event_type in {"context_compaction", "retry"}:
+                summary.append(
+                    {
+                        **base,
+                        **{
+                            key: value
+                            for key, value in event.items()
+                            if key
+                            in {
+                                "iteration",
+                                "model",
+                                "prompt_tokens",
+                                "messages_before",
+                                "messages_after",
+                                "reason",
+                            }
+                        },
+                    }
+                )
+            elif event_type == "final_response":
+                summary.append(
+                    {
+                        **base,
+                        "model": event.get("model"),
+                        "iterations": event.get("iterations"),
+                        "finish_reason": event.get("finish_reason"),
+                        "usage": event.get("usage") or {},
+                        "tools_used": event.get("tools_used") or [],
+                    }
+                )
+        return summary
+
     def __init__(
         self,
         bus: MessageBus,
@@ -151,6 +274,7 @@ class AgentLoop:
         self.channel_manager = None  # set post-construction by the caller
         self.context = ContextBuilder(workspace, tool_profile=tool_profile)
         self.sessions = session_manager or SessionManager(workspace)
+        self.analysis_artifacts = AnalysisArtifactStore(workspace)
         self.tools = ToolRegistry()
         self.subagents = SubagentManager(
             provider=provider,
@@ -567,6 +691,16 @@ class AgentLoop:
         except (TypeError, json.JSONDecodeError):
             if not isinstance(result, str) or "... (truncated," not in result:
                 return ""
+            analysis_match = re.search(
+                r'"analysis_id"\s*:\s*"(?P<analysis_id>pqc-defect-loss:[0-9a-f]{64})"',
+                result,
+            )
+            pqc_schema = bool(
+                re.search(r'"schema_version"\s*:\s*"linghui-pqc-defect-loss/v1"', result)
+            )
+            pqc_complete = bool(re.search(r'"status"\s*:\s*"complete"', result))
+            if analysis_match and pqc_schema and pqc_complete:
+                return f"analysis_id={analysis_match.group('analysis_id')}"
             artifact_match = re.search(
                 r'"artifact_id"\s*:\s*"(?P<artifact_id>'
                 r"monthly-event-reconciliation:"
@@ -582,6 +716,14 @@ class AgentLoop:
             return f"artifact_id={artifact_match.group('artifact_id')}"
         if not isinstance(payload, dict):
             return ""
+        analysis_id = payload.get("analysis_id")
+        if (
+            payload.get("schema_version") == "linghui-pqc-defect-loss/v1"
+            and payload.get("status") == "complete"
+            and isinstance(analysis_id, str)
+            and _PQC_ANALYSIS_ID_RE.fullmatch(analysis_id)
+        ):
+            return f"analysis_id={analysis_id}"
         artifact_id = payload.get("artifact_id")
         if not isinstance(artifact_id, str) or not _MONTHLY_ARTIFACT_ID_RE.fullmatch(artifact_id):
             return ""
@@ -589,6 +731,67 @@ class AgentLoop:
         if not isinstance(release_gate, dict) or release_gate.get("passed") is not True:
             return ""
         return f"artifact_id={artifact_id}"
+
+    def _bind_analysis_context(
+        self,
+        session: Session,
+        result: Any,
+        *,
+        parent_uuid: str | None,
+    ) -> str | None:
+        evidence = self._tool_result_evidence(result)
+        if not evidence.startswith("analysis_id="):
+            return parent_uuid
+        analysis_id = evidence.removeprefix("analysis_id=")
+        try:
+            self.analysis_artifacts.load(analysis_id)
+        except AnalysisArtifactError as error:
+            logger.warning("Refused to bind analysis context {}: {}", analysis_id, error)
+            return parent_uuid
+
+        event_uuid = str(uuid.uuid4())
+        session.metadata["active_analysis_id"] = analysis_id
+        session.add_event(
+            {
+                "uuid": event_uuid,
+                "parent_uuid": parent_uuid,
+                "type": "analysis_context",
+                "mode": "created",
+                "analysis_id": analysis_id,
+            }
+        )
+        self.sessions.save(session)
+        return event_uuid
+
+    def _reuse_analysis_context(
+        self,
+        session: Session,
+        *,
+        parent_uuid: str,
+    ) -> str | None:
+        analysis_id = session.metadata.get("active_analysis_id")
+        if not isinstance(analysis_id, str):
+            return None
+        try:
+            payload = self.analysis_artifacts.load(analysis_id)
+        except AnalysisArtifactError as error:
+            logger.warning("Bound analysis context {} is unavailable: {}", analysis_id, error)
+            return (
+                "A prior analysis is referenced by this conversation, but its approved "
+                "artifact is unavailable. Do not reuse numeric claims from chat history. "
+                "Explain that the analysis must be run again before quoting a result."
+            )
+
+        session.add_event(
+            {
+                "uuid": str(uuid.uuid4()),
+                "parent_uuid": parent_uuid,
+                "type": "analysis_context",
+                "mode": "reused",
+                "analysis_id": analysis_id,
+            }
+        )
+        return self.analysis_artifacts.system_instruction(payload)
 
     @staticmethod
     def _guarded_tool_call_signature(name: str, arguments: Any) -> str | None:
@@ -820,6 +1023,20 @@ class AgentLoop:
         terminal_reason = "iteration_limit"
         model_telemetry = RunModelTelemetry()
 
+        def record_retry(reason: str) -> None:
+            model_telemetry.record_application_retry()
+            if session and request_uuid:
+                session.add_event(
+                    {
+                        "uuid": str(uuid.uuid4()),
+                        "parent_uuid": request_uuid,
+                        "type": "retry",
+                        "model": active_model,
+                        "iteration": iteration,
+                        "reason": reason,
+                    }
+                )
+
         while iteration < self.max_iterations:
             iteration += 1
 
@@ -830,6 +1047,37 @@ class AgentLoop:
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
             )
+            if session and request_uuid:
+                session.add_event(
+                    {
+                        "uuid": str(uuid.uuid4()),
+                        "parent_uuid": request_uuid,
+                        "type": "model_call",
+                        "model": active_model,
+                        "iteration": iteration,
+                        "finish_reason": response.finish_reason,
+                        "usage": response.usage,
+                        "provider_retry_count": response.retry_count,
+                        "tool_calls": [
+                            {
+                                "function": {"name": sanitize_tool_name(tool_call.name)},
+                                "id": tool_call.id,
+                            }
+                            for tool_call in response.tool_calls
+                        ],
+                    }
+                )
+                for _ in range(max(0, response.retry_count)):
+                    session.add_event(
+                        {
+                            "uuid": str(uuid.uuid4()),
+                            "parent_uuid": request_uuid,
+                            "type": "retry",
+                            "model": active_model,
+                            "iteration": iteration,
+                            "reason": "provider_retry",
+                        }
+                    )
             model_telemetry.record(response)
 
             if response.has_tool_calls:
@@ -979,6 +1227,12 @@ class AgentLoop:
                             }
                         )
                         parent_uuid = tr_uuid
+                    if session:
+                        parent_uuid = self._bind_analysis_context(
+                            session,
+                            result,
+                            parent_uuid=parent_uuid,
+                        )
 
                 steered_messages = await self._apply_pending_steers(
                     execution_key,
@@ -1027,16 +1281,30 @@ class AgentLoop:
                         }
                     )
                     if iteration < self.max_iterations:
-                        model_telemetry.record_application_retry()
+                        record_retry("malformed_tool_call")
                 else:
                     _consecutive_malformed = 0
                     _real_iterations += 1
+                messages_before_compaction = messages
                 messages = await self._maybe_compact_active_context(
                     messages,
                     response.usage,
                     model=active_model,
                     telemetry=model_telemetry,
                 )
+                if messages is not messages_before_compaction and session and request_uuid:
+                    session.add_event(
+                        {
+                            "uuid": str(uuid.uuid4()),
+                            "parent_uuid": request_uuid,
+                            "type": "context_compaction",
+                            "model": active_model,
+                            "iteration": iteration,
+                            "prompt_tokens": response.usage.get("prompt_tokens", 0),
+                            "messages_before": len(messages_before_compaction),
+                            "messages_after": len(messages),
+                        }
+                    )
             elif response.finish_reason == "length":
                 # Model hit max_tokens before finishing — inject a continue prompt
                 # and keep looping rather than breaking mid-task.
@@ -1064,14 +1332,28 @@ class AgentLoop:
                         ),
                     }
                 )
+                messages_before_compaction = messages
                 messages = await self._maybe_compact_active_context(
                     messages,
                     response.usage,
                     model=active_model,
                     telemetry=model_telemetry,
                 )
+                if messages is not messages_before_compaction and session and request_uuid:
+                    session.add_event(
+                        {
+                            "uuid": str(uuid.uuid4()),
+                            "parent_uuid": request_uuid,
+                            "type": "context_compaction",
+                            "model": active_model,
+                            "iteration": iteration,
+                            "prompt_tokens": response.usage.get("prompt_tokens", 0),
+                            "messages_before": len(messages_before_compaction),
+                            "messages_after": len(messages),
+                        }
+                    )
                 if iteration < self.max_iterations:
-                    model_telemetry.record_application_retry()
+                    record_retry("output_length")
             else:
                 final_content = self._strip_think(response.content)
 
@@ -1098,7 +1380,7 @@ class AgentLoop:
                             "content": "Please respond to the user based on your findings.",
                         }
                     )
-                    model_telemetry.record_application_retry()
+                    record_retry("missing_final_text")
                     continue
 
                 if (
@@ -1136,7 +1418,7 @@ class AgentLoop:
                         }
                     )
                     final_content = None
-                    model_telemetry.record_application_retry()
+                    record_retry("incomplete_delivery")
                     continue
 
                 # Kimi k2.5 sometimes emits a text-only "I'll do X next" announcement
@@ -1175,7 +1457,7 @@ class AgentLoop:
                         }
                     )
                     final_content = None  # don't emit final_response yet
-                    model_telemetry.record_application_retry()
+                    record_retry("text_only_midtask")
                     continue
 
                 steered_messages = await self._apply_pending_steers(
@@ -1718,6 +2000,7 @@ class AgentLoop:
             # Capture events before clearing (avoid race condition with background task)
             events_to_archive = session.events.copy()
             session.clear()
+            session.metadata.pop("active_analysis_id", None)
             self.sessions.save(session)
             self.sessions.invalidate(session.key)
 
@@ -1878,7 +2161,8 @@ class AgentLoop:
         # twice to the LLM.
         history_snapshot = session.get_history(max_messages=self.memory_window)
 
-        # Emit user_input event
+        # Emit user_input event. The index scopes exported trace telemetry to this turn.
+        turn_event_start = len(session.events)
         session.add_event(
             {
                 "uuid": request_uuid,
@@ -1891,6 +2175,11 @@ class AgentLoop:
             }
         )
 
+        analysis_instruction = self._reuse_analysis_context(
+            session,
+            parent_uuid=request_uuid,
+        )
+
         bootstrap_instruction = self._composio_bootstrap_instruction(session, msg.content)
         initial_messages = self.context.build_messages(
             history=history_snapshot,
@@ -1900,6 +2189,7 @@ class AgentLoop:
             chat_id=msg.chat_id,
         )
         self._append_system_instruction(initial_messages, bootstrap_instruction)
+        self._append_system_instruction(initial_messages, analysis_instruction)
         self._append_system_instruction(
             initial_messages,
             self._trusted_gateway_system_instruction(msg),
@@ -2080,6 +2370,8 @@ class AgentLoop:
             "retry_count": loop_result.retry_count,
         }
         outbound_metadata["model"] = active_model
+        outbound_metadata["runtime_provenance"] = self._runtime_provenance()
+        outbound_metadata["trace_summary"] = self._trace_summary(session.events[turn_event_start:])
         if terminal_error_code:
             outbound_metadata["error_code"] = terminal_error_code
         if msg.channel == "telegram":
