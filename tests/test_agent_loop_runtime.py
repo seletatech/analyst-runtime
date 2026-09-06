@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from analyst_runtime.agent.analysis_context import AnalysisArtifactError, AnalysisArtifactStore
 from analyst_runtime.agent.loop import AgentLoop
 from analyst_runtime.agent.tools.base import Tool
 from analyst_runtime.agent.tools.message import MessageTool
@@ -224,11 +226,9 @@ async def test_runtime_binds_completed_analysis_and_reuses_it_in_the_same_conver
     tmp_path: Path,
 ) -> None:
     (tmp_path / "workspace.json").write_text('{"schema_version":1}', encoding="utf-8")
-    analysis_id = "pqc-defect-loss:" + "a" * 64
     artifact = {
         "schema_version": "linghui-pqc-defect-loss/v1",
         "status": "complete",
-        "analysis_id": analysis_id,
         "request": {"product": "HUD-70538", "start_month": "2025-01", "end_month": "2026-07"},
         "population": {
             "final_disposition_net_loss_m": 695,
@@ -236,8 +236,14 @@ async def test_runtime_binds_completed_analysis_and_reuses_it_in_the_same_conver
             "observation_total_m": 1915,
             "excluded_missing_lineage_m": 75,
         },
+        "included": [{"roll_id": "example-roll", "quantity_m": 695}],
     }
-    artifact_path = tmp_path / "artifacts" / "analyses" / "pqc-defect-loss" / f"{'a' * 64}.json"
+    digest = hashlib.sha256(
+        json.dumps(artifact, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    analysis_id = f"pqc-defect-loss:{digest}"
+    artifact["analysis_id"] = analysis_id
+    artifact_path = tmp_path / "artifacts" / "analyses" / "pqc-defect-loss" / f"{digest}.json"
     artifact_path.parent.mkdir(parents=True)
     artifact_path.write_text(json.dumps(artifact, ensure_ascii=False), encoding="utf-8")
     provider = _SequenceProvider(
@@ -269,6 +275,16 @@ async def test_runtime_binds_completed_analysis_and_reuses_it_in_the_same_conver
     assert SessionManager(tmp_path).get_or_create("web:same-conversation").metadata == {
         "active_analysis_id": analysis_id
     }
+    tool_history = [message for message in persisted.get_history() if message.get("role") == "tool"]
+    assert tool_history == [
+        {
+            "role": "tool",
+            "tool_call_id": "analysis-1",
+            "name": "exec",
+            "content": f"analysis_id={analysis_id}",
+        }
+    ]
+    assert "example-roll" not in json.dumps(tool_history)
     assert any(
         event["type"] == "analysis_context"
         and event["mode"] == "created"
@@ -286,6 +302,27 @@ async def test_runtime_binds_completed_analysis_and_reuses_it_in_the_same_conver
     assert "do not search chat sessions" in json.dumps(provider.calls[2]).lower()
     assert "does not approve access to new business data" in json.dumps(provider.calls[2]).lower()
     assert len(provider.calls) == 3
+
+
+def test_analysis_store_rejects_content_that_does_not_match_identity(tmp_path: Path) -> None:
+    analysis_id = "pqc-defect-loss:" + "a" * 64
+    path = tmp_path / "artifacts" / "analyses" / "pqc-defect-loss" / f"{'a' * 64}.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "linghui-pqc-defect-loss/v1",
+                "status": "complete",
+                "analysis_id": analysis_id,
+                "request": {"product": "HUD-70538"},
+                "population": {"final_disposition_net_loss_m": 1242},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AnalysisArtifactError, match="does not match"):
+        AnalysisArtifactStore(tmp_path).load(analysis_id)
 
 
 @pytest.mark.asyncio

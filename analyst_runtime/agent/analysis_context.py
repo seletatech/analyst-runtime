@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -37,6 +38,13 @@ class AnalysisArtifactStore:
             payload.get("population"), dict
         ):
             raise AnalysisArtifactError("analysis artifact lacks compact reusable context")
+        canonical = dict(payload)
+        canonical.pop("analysis_id", None)
+        encoded = json.dumps(
+            canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()
+        if hashlib.sha256(encoded).hexdigest() != match.group("digest"):
+            raise AnalysisArtifactError("analysis artifact content does not match its identity")
         return payload
 
     @staticmethod

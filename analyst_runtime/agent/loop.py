@@ -881,6 +881,24 @@ class AgentLoop:
             logger.warning("Failed to save tool result {}: {}", tool_call_id, exc)
             return result  # fall back to full inline if archive fails
 
+    def _session_tool_result_content(
+        self,
+        tool_call_id: str,
+        tool_name: str,
+        result: str,
+    ) -> str:
+        """Persist an approved analysis pointer instead of its full business payload."""
+        evidence = self._tool_result_evidence(result)
+        if evidence.startswith("analysis_id="):
+            analysis_id = evidence.removeprefix("analysis_id=")
+            try:
+                self.analysis_artifacts.load(analysis_id)
+            except AnalysisArtifactError:
+                pass
+            else:
+                return evidence
+        return self._save_tool_result(tool_call_id, tool_name, result)
+
     def _composio_credentials_path(self) -> Path:
         return self.workspace / ".analyst-runtime" / "composio" / "credentials.json"
 
@@ -1213,7 +1231,11 @@ class AgentLoop:
                     # "tool_use ids were found without tool_result blocks immediately after"
                     if _persist_session:
                         tr_uuid = str(uuid.uuid4())
-                        ref_content = self._save_tool_result(tool_call.id, tool_call.name, result)
+                        ref_content = self._session_tool_result_content(
+                            tool_call.id,
+                            tool_call.name,
+                            result,
+                        )
                         session.add_event(
                             {
                                 "uuid": tr_uuid,
