@@ -304,6 +304,32 @@ async def test_web_channel_routes_credential_verification_to_runtime() -> None:
 
 
 @pytest.mark.asyncio
+async def test_web_channel_routes_model_profile_resolution_to_runtime() -> None:
+    bus = MagicMock()
+    bus.publish_inbound = AsyncMock()
+    channel = WebChannel(
+        MagicMock(sandbox_id="test-sandbox", gateway_url="http://gateway"),
+        bus,
+    )
+
+    await channel._process_inbound(
+        {
+            "type": "model_profile_resolution",
+            "session_id": "chat-model-profile-123",
+            "content": "",
+            "metadata": {
+                "model_profile_id": "glm-5.3-flash",
+                "runtime": "linghui-dashboard-agent",
+            },
+        }
+    )
+
+    published = bus.publish_inbound.await_args.args[0]
+    assert published.metadata["control"] == "resolve_model_profile"
+    assert published.metadata["model_profile_id"] == "glm-5.3-flash"
+
+
+@pytest.mark.asyncio
 async def test_cancel_control_stops_the_active_chat_without_stopping_agent(
     tmp_path: Path,
 ) -> None:

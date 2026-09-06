@@ -613,6 +613,49 @@ async def test_runtime_verifies_provider_credentials_without_echoing_secret(
 
 
 @pytest.mark.asyncio
+async def test_runtime_resolves_model_profiles_for_the_trusted_gateway(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    (tmp_path / "workspace.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "trusted_gateway": {
+                    "project_id": "linghui-ai-suite",
+                    "runtime": "linghui-dashboard-agent",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GLM_5_3_FLASH_PROVIDER", "tokenhub")
+    agent = AgentLoop(bus=MessageBus(), provider=_SequenceProvider([]), workspace=tmp_path)
+    message = InboundMessage(
+        channel="web",
+        sender_id="model-profile-run",
+        chat_id="model-profile-run",
+        content="",
+        metadata={
+            "control": "resolve_model_profile",
+            "model_profile_id": "glm-5.3-flash",
+            "project_id": "linghui-ai-suite",
+            "runtime": "linghui-dashboard-agent",
+        },
+    )
+
+    response = await agent._process_message(message)
+
+    assert response is not None
+    assert response.metadata == {
+        "control": "model_profile_resolved",
+        "model": "tokenhub/glm-5.3-flash",
+        "model_profile_id": "glm-5.3-flash",
+        "provider": "tokenhub",
+    }
+
+
+@pytest.mark.asyncio
 async def test_runtime_emits_send_message_trace_before_final_response(
     tmp_path: Path,
 ) -> None:

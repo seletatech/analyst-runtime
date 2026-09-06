@@ -37,6 +37,7 @@ MSG_TYPE_CANCEL_REQUEST = "cancel_request"
 MSG_TYPE_STEER_REQUEST = "steer_request"
 MSG_TYPE_STEER_STATUS_REQUEST = "steer_status_request"
 MSG_TYPE_PROVIDER_CREDENTIAL_VERIFICATION = "provider_credential_verification"
+MSG_TYPE_MODEL_PROFILE_RESOLUTION = "model_profile_resolution"
 MSG_TYPE_AGENT_RESPONSE = "agent_response"
 MSG_TYPE_AGENT_STATUS = "agent_status"
 MSG_TYPE_ERROR = "error"
@@ -319,6 +320,25 @@ class WebChannel(BaseChannel):
                         "sandbox_id": self.sandbox_id,
                         **metadata,
                         "control": "verify_provider_credential",
+                    },
+                )
+            )
+            return
+
+        if msg_type == MSG_TYPE_MODEL_PROFILE_RESOLUTION:
+            await self.bus.publish_inbound(
+                InboundMessage(
+                    channel=self.name,
+                    sender_id=session_id,
+                    chat_id=session_id,
+                    content="",
+                    run_id=run_id,
+                    conversation_id=conversation_id,
+                    metadata={
+                        "project_id": project_id,
+                        "sandbox_id": self.sandbox_id,
+                        **metadata,
+                        "control": "resolve_model_profile",
                     },
                 )
             )

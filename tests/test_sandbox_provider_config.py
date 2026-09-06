@@ -59,6 +59,15 @@ def test_glm_profile_can_preserve_the_existing_openrouter_route(monkeypatch) -> 
     assert profile.model == "openrouter/z-ai/glm-5.3-flash"
 
 
+def test_glm_profile_defaults_to_the_existing_openrouter_route(monkeypatch) -> None:
+    monkeypatch.delenv("GLM_5_3_FLASH_PROVIDER", raising=False)
+
+    profile = resolve_model_profile("glm-5.3-flash")
+
+    assert profile.provider == "openrouter"
+    assert profile.model == "openrouter/z-ai/glm-5.3-flash"
+
+
 def test_glm_profile_rejects_unknown_provider(monkeypatch) -> None:
     monkeypatch.setenv("GLM_5_3_FLASH_PROVIDER", "unknown")
 

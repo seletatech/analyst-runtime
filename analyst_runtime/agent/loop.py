@@ -2029,6 +2029,36 @@ class AgentLoop:
                 },
             )
 
+        if msg.metadata.get("control") == "resolve_model_profile" and self._is_trusted_gateway(msg):
+            profile_id = msg.metadata.get("model_profile_id")
+            try:
+                profile = resolve_model_profile(str(profile_id))
+            except ValueError:
+                return OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content="",
+                    run_id=msg.run_id,
+                    conversation_id=msg.conversation_id,
+                    metadata={
+                        "control": "model_profile_rejected",
+                        "model_profile_id": str(profile_id),
+                    },
+                )
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content="",
+                run_id=msg.run_id,
+                conversation_id=msg.conversation_id,
+                metadata={
+                    "control": "model_profile_resolved",
+                    "model": profile.model,
+                    "model_profile_id": profile.id,
+                    "provider": profile.provider,
+                },
+            )
+
         # System messages route back via chat_id ("channel:chat_id")
         if msg.channel == "system":
             return await self._process_system_message(msg)
