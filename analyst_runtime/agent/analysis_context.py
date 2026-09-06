@@ -49,8 +49,10 @@ class AnalysisArtifactStore:
 
     @staticmethod
     def system_instruction(payload: dict[str, Any]) -> str:
+        kind, digest = str(payload["analysis_id"]).split(":", 1)
         compact = {
             "analysis_id": payload["analysis_id"],
+            "artifact_path": f"/workspace/artifacts/analyses/{kind}/{digest}.json",
             "request": payload["request"],
             "population": payload["population"],
         }

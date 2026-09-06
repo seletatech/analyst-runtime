@@ -132,6 +132,18 @@ class AgentLoop:
         says_unchanged = any(marker in compact for marker in unchanged_markers)
         return references_prior and requests_reuse and names_reused_state and says_unchanged
 
+    @staticmethod
+    def _explicit_followup_analysis(content: str) -> bool:
+        """Recognize permission to read new evidence for a follow-up analysis."""
+        compact = re.sub(r"\s+", "", content)
+        evidence_actions = ("补查", "查阅", "调取", "读取", "检索")
+        evidence_scopes = ("生产记录", "过程资料", "过程检验", "品质资料", "PQC")
+        analysis_goals = ("原因分析", "根因分析", "过程分析")
+        return any(action in compact for action in evidence_actions) and (
+            any(scope in compact for scope in evidence_scopes)
+            or any(goal in compact for goal in analysis_goals)
+        )
+
     def _runtime_provenance(self) -> dict[str, str]:
         def file_hash(relative_path: str) -> str:
             path = self.workspace / relative_path
@@ -2218,6 +2230,8 @@ class AgentLoop:
             parent_uuid=request_uuid,
         )
         reuse_requested = active_analysis_available and self._explicit_analysis_reuse(msg.content)
+        followup_analysis = reuse_requested and self._explicit_followup_analysis(msg.content)
+        interpretation_only = reuse_requested and not followup_analysis
 
         bootstrap_instruction = self._composio_bootstrap_instruction(session, msg.content)
         initial_messages = self.context.build_messages(
@@ -2229,16 +2243,27 @@ class AgentLoop:
         )
         self._append_system_instruction(initial_messages, bootstrap_instruction)
         self._append_system_instruction(initial_messages, analysis_instruction)
-        if reuse_requested:
+        if interpretation_only:
+            self._append_system_instruction(
+                initial_messages,
+                "The user explicitly asked to keep the prior analysis scope and result "
+                "unchanged without authorizing new evidence access. This is an "
+                "interpretation-only turn: answer now from the active approved analysis and "
+                "explicitly restate its net-loss result. No tools are available. Do not "
+                "announce future data access, recalculation, or investigation.",
+            )
+        elif followup_analysis:
             self._append_system_instruction(
                 initial_messages,
                 "The user explicitly asked to keep the prior analysis scope and result "
                 "unchanged. Keep the active analysis unchanged as the numeric baseline and "
                 "explicitly restate its net-loss result. Do not rerun or replace that approved "
-                "calculation. Tools remain available for genuinely new follow-up analysis, "
-                "such as investigating process evidence against the fixed population. If the "
-                "user requested that work and confirmed its scope, perform it now; do not merely "
-                "announce future data access or investigation.",
+                "calculation. Tools remain available for this new follow-up analysis. Perform "
+                "a bounded, targeted investigation against the fixed population: use the exact "
+                "approved artifact path and evidence locators, do not enumerate unrelated "
+                "analysis artifacts, install packages, or scan every workspace file. Conclude "
+                "in this turn with recorded associations, inferences, hypotheses, and explicit "
+                "limitations; do not merely announce future investigation.",
             )
         self._append_system_instruction(
             initial_messages,
@@ -2255,7 +2280,7 @@ class AgentLoop:
                 "parent_uuid": request_uuid,
                 "type": "prompt_snapshot",
                 "content": system_content,
-                "tools": self.tools.get_definitions(),
+                "tools": self.tools.get_definitions() if not interpretation_only else [],
             }
         )
 
@@ -2359,7 +2384,7 @@ class AgentLoop:
                 request_uuid=request_uuid,
                 model=active_model,
                 execution_key=msg.execution_key,
-                allow_tools=True,
+                allow_tools=not interpretation_only,
             )
         finally:
             self.provider.reset_request_credentials(credential_token)

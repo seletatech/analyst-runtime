@@ -274,6 +274,7 @@ async def test_runtime_binds_completed_analysis_and_reuses_it_in_the_same_conver
                 ],
             ),
             LLMResponse(content="最终结论：净损耗为 695 米。"),
+            LLMResponse(content="最终结论：沿用上次分析，净损耗仍为 695 米。"),
             LLMResponse(
                 content=None,
                 tool_calls=[
@@ -298,9 +299,16 @@ async def test_runtime_binds_completed_analysis_and_reuses_it_in_the_same_conver
             "确认沿用上一轮完整口径和刚才得到的结果，所有范围均不变。",
         )
     )
+    third = await agent._process_message(
+        _message(
+            "same-conversation",
+            "沿用上一轮同一口径和结果，范围不变；现在补查生产记录并完成原因分析。",
+        )
+    )
 
     assert first is not None
     assert second is not None
+    assert third is not None
     persisted = agent.sessions.get_or_create("web:same-conversation")
     assert persisted.metadata == {"active_analysis_id": analysis_id}
     assert SessionManager(tmp_path).get_or_create("web:same-conversation").metadata == {
@@ -328,20 +336,29 @@ async def test_runtime_binds_completed_analysis_and_reuses_it_in_the_same_conver
         and event["analysis_id"] == analysis_id
         for event in second.metadata["trace_summary"]
     )
+    assert any(
+        event["type"] == "analysis_context"
+        and event["mode"] == "reused"
+        and event["analysis_id"] == analysis_id
+        for event in third.metadata["trace_summary"]
+    )
     assert analysis_id in json.dumps(provider.calls[2], ensure_ascii=False)
     assert "695" in json.dumps(provider.calls[2], ensure_ascii=False)
     assert "do not search chat sessions" in json.dumps(provider.calls[2]).lower()
     assert "does not approve access to new business data" in json.dumps(provider.calls[2]).lower()
-    reuse_prompt = json.dumps(provider.calls[2]).lower()
-    assert "keep the active analysis unchanged as the numeric baseline" in reuse_prompt
-    assert "tools remain available for genuinely new follow-up analysis" in reuse_prompt
-    assert provider.tool_sets[2]
-    assert {tool["function"]["name"] for tool in provider.tool_sets[2]} >= {"exec"}
+    assert "interpretation-only turn" in json.dumps(provider.calls[2]).lower()
+    assert provider.tool_sets[2] == []
+    causal_prompt = json.dumps(provider.calls[3]).lower()
+    assert "keep the active analysis unchanged as the numeric baseline" in causal_prompt
+    assert "tools remain available for this new follow-up analysis" in causal_prompt
+    assert "bounded, targeted investigation" in causal_prompt
+    assert provider.tool_sets[3]
+    assert {tool["function"]["name"] for tool in provider.tool_sets[3]} >= {"exec"}
     assert any(
         event["type"] == "tool_result" and event["tool_name"] == "exec"
-        for event in second.metadata["trace_summary"]
+        for event in third.metadata["trace_summary"]
     )
-    assert len(provider.calls) == 4
+    assert len(provider.calls) == 5
 
 
 def test_analysis_reuse_intent_requires_explicit_prior_and_unchanged_language() -> None:
@@ -350,6 +367,15 @@ def test_analysis_reuse_intent_requires_explicit_prior_and_unchanged_language() 
     )
     assert not AgentLoop._explicit_analysis_reuse("请分析这个问题的原因")
     assert not AgentLoop._explicit_analysis_reuse("沿用行业常见方法重新计算")
+
+
+def test_followup_analysis_requires_explicit_authorization_to_use_new_evidence() -> None:
+    assert AgentLoop._explicit_followup_analysis(
+        "沿用上一轮同一口径和结果，范围不变；现在补查生产记录并完成原因分析。"
+    )
+    assert not AgentLoop._explicit_followup_analysis(
+        "沿用上一轮同一口径和结果，只说明旧主张是否受支持。"
+    )
 
 
 def test_analysis_store_rejects_content_that_does_not_match_identity(tmp_path: Path) -> None:
