@@ -99,6 +99,24 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         model_overrides=(),
     ),
 
+    # Tencent Cloud TokenHub: OpenAI-compatible China-hosted model gateway.
+    ProviderSpec(
+        name="tokenhub",
+        keywords=("tokenhub",),
+        env_key="TOKENHUB_API_KEY",
+        display_name="Tencent Cloud TokenHub",
+        litellm_prefix="openai",
+        skip_prefixes=(),
+        env_extras=(),
+        is_gateway=True,
+        is_local=False,
+        detect_by_key_prefix="",
+        detect_by_base_keyword="tokenhub.tencentmaas.com",
+        default_api_base="https://tokenhub.tencentmaas.com/v1",
+        strip_model_prefix=True,
+        model_overrides=(),
+    ),
+
     # AiHubMix: global gateway, OpenAI-compatible interface.
     # strip_model_prefix=True: it doesn't understand "anthropic/claude-3",
     # so we strip to bare "claude-3" then re-prefix as "openai/claude-3".

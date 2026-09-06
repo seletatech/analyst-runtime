@@ -74,6 +74,11 @@ def _resolve_consolidation_model(llm_provider: str) -> str | None:
             return None
         return raw if raw.startswith("openrouter/") else f"openrouter/{raw}"
 
+    if llm_provider == "tokenhub":
+        if not raw:
+            return None
+        return raw if raw.startswith("tokenhub/") else f"tokenhub/{raw}"
+
     if llm_provider == "deepseek":
         if not raw:
             return None
@@ -92,6 +97,7 @@ def _resolve_sandbox_model(llm_provider: str) -> str:
     provider_defaults = {
         "bedrock": "moonshotai.kimi-k2.5",
         "openrouter": "openai/gpt-4o-mini",
+        "tokenhub": "glm-5.3-flash",
         "deepseek": "deepseek-chat",
         "openai": "gpt-4o-mini",
         "zhipu": "glm-5.3-flash",
@@ -113,6 +119,9 @@ def _resolve_sandbox_model(llm_provider: str) -> str:
 
     if llm_provider == "openrouter":
         return raw_model_id if raw_model_id.startswith("openrouter/") else f"openrouter/{raw_model_id}"
+
+    if llm_provider == "tokenhub":
+        return raw_model_id if raw_model_id.startswith("tokenhub/") else f"tokenhub/{raw_model_id}"
 
     if llm_provider == "deepseek":
         return raw_model_id if raw_model_id.startswith("deepseek/") else f"deepseek/{raw_model_id}"
@@ -725,7 +734,7 @@ def sandbox():
     workspace_path = Path(os.environ.get("WORKSPACE_PATH", "/workspace"))
     llm_provider = os.environ.get("LLM_PROVIDER", "bedrock").strip().lower()
     llm_provider = {"bigmodel": "zhipu", "zai": "zhipu"}.get(llm_provider, llm_provider)
-    if llm_provider in {"bedrock", "openrouter", "deepseek", "openai", "zhipu"}:
+    if llm_provider in {"bedrock", "openrouter", "tokenhub", "deepseek", "openai", "zhipu"}:
         model = _resolve_sandbox_model(llm_provider)
     else:
         logger.warning("Unknown LLM_PROVIDER=%s, falling back to openrouter", llm_provider)
@@ -781,6 +790,12 @@ def sandbox():
             "openrouter": {
                 "apiKey": os.environ.get("OPENROUTER_API_KEY", ""),
                 "apiBase": openrouter_base,
+            },
+            "tokenhub": {
+                "apiKey": os.environ.get("TOKENHUB_API_KEY", ""),
+                "apiBase": os.environ.get(
+                    "TOKENHUB_BASE_URL", "https://tokenhub.tencentmaas.com/v1"
+                ),
             },
             "deepseek": {
                 "apiKey": os.environ.get("DEEPSEEK_API_KEY", ""),

@@ -186,6 +186,7 @@ async def test_runtime_returns_sanitized_trace_and_workspace_provenance(
     (tmp_path / "data" / "manifest.json").write_text('{"release":"test"}', encoding="utf-8")
     monkeypatch.setenv("ANALYST_RUNTIME_VERSION", "a" * 40)
     monkeypatch.setenv("ANALYST_RUNTIME_IMAGE_DIGEST", "example/image@sha256:" + "b" * 64)
+    monkeypatch.setenv("GLM_5_3_FLASH_PROVIDER", "tokenhub")
     provider = _SequenceProvider(
         [
             LLMResponse(
@@ -221,6 +222,7 @@ async def test_runtime_returns_sanitized_trace_and_workspace_provenance(
     assert provenance["product_commit"] == "a" * 40
     assert provenance["image_digest"] == "example/image@sha256:" + "b" * 64
     assert provenance["tool_profile"] == "trusted-analysis"
+    assert provenance["model_provider"] == "tokenhub"
     assert len(provenance["agents_md_sha256"]) == 64
     assert len(provenance["workspace_data_manifest_sha256"]) == 64
     trace = response.metadata["trace_summary"]
@@ -230,7 +232,7 @@ async def test_runtime_returns_sanitized_trace_and_workspace_provenance(
         "model_call",
         "final_response",
     ]
-    assert trace[-2]["model"] == "glm-5.3-flash"
+    assert trace[-2]["model"] == "tokenhub/glm-5.3-flash"
     assert trace[-2]["usage"] == {"prompt_tokens": 10, "completion_tokens": 2}
     assert "private business question" not in json.dumps(trace)
     assert "safe prompt" not in json.dumps(trace)

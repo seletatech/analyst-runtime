@@ -227,6 +227,7 @@ class ProvidersConfig(Base):
     bedrock: ProviderConfig = Field(default_factory=ProviderConfig)  # AWS Bedrock (api_key=bearer token, api_base=region)
     openai: ProviderConfig = Field(default_factory=ProviderConfig)
     openrouter: ProviderConfig = Field(default_factory=ProviderConfig)
+    tokenhub: ProviderConfig = Field(default_factory=ProviderConfig)
     deepseek: ProviderConfig = Field(default_factory=ProviderConfig)
     groq: ProviderConfig = Field(default_factory=ProviderConfig)
     zhipu: ProviderConfig = Field(default_factory=ProviderConfig)

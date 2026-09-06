@@ -107,7 +107,7 @@ class LiteLLMProvider(LLMProvider):
     async def verify_request_credentials(self, *, api_key: str, provider: str) -> bool:
         """Verify BYOK without moving provider HTTP behavior into the Web or API."""
         spec = find_by_name(provider)
-        if spec is None or provider not in {"deepseek", "zhipu"}:
+        if spec is None or provider not in {"deepseek", "openrouter", "tokenhub", "zhipu"}:
             return False
         base_url = spec.default_api_base.rstrip("/")
         if not base_url:
@@ -128,6 +128,15 @@ class LiteLLMProvider(LLMProvider):
         """Resolve model name by applying provider/gateway prefixes."""
         request_credentials = _request_credentials.get()
         request_provider = request_credentials[2] if request_credentials else None
+        if request_provider:
+            request_spec = find_by_name(request_provider)
+            if request_spec and request_spec.is_gateway:
+                if request_spec.strip_model_prefix:
+                    model = model.split("/")[-1]
+                prefix = request_spec.litellm_prefix
+                if prefix and not model.startswith(f"{prefix}/"):
+                    model = f"{prefix}/{model}"
+                return model
         if self._gateway and not request_provider:
             # Gateway mode: apply gateway prefix, skip provider-specific prefixes
             prefix = self._gateway.litellm_prefix
@@ -303,6 +312,8 @@ class LiteLLMProvider(LLMProvider):
             return None
         env_names = {
             "deepseek": "DEEPSEEK_BASE_URL",
+            "openrouter": "OPENROUTER_BASE_URL",
+            "tokenhub": "TOKENHUB_BASE_URL",
             "zhipu": "ZAI_BASE_URL",
         }
         configured = os.environ.get(env_names.get(provider, ""), "").strip()

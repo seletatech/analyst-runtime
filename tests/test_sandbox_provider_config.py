@@ -6,6 +6,7 @@ from analyst_runtime.cli.commands import (
     _resolve_consolidation_model,
     _resolve_sandbox_model,
 )
+from analyst_runtime.model_profiles import resolve_model_profile
 from analyst_runtime.providers import litellm_provider as litellm_provider_module
 from analyst_runtime.providers.litellm_provider import LiteLLMProvider
 
@@ -21,6 +22,48 @@ def test_openrouter_glm_5_3_flash_uses_gateway_route(monkeypatch) -> None:
     monkeypatch.setenv("LLM_MODEL_ID", "z-ai/glm-5.3-flash")
 
     assert _resolve_sandbox_model("openrouter") == "openrouter/z-ai/glm-5.3-flash"
+
+
+def test_tokenhub_glm_5_3_flash_uses_openai_compatible_route(monkeypatch) -> None:
+    monkeypatch.delenv("LLM_MODEL_ID", raising=False)
+
+    assert _resolve_sandbox_model("tokenhub") == "tokenhub/glm-5.3-flash"
+    provider = LiteLLMProvider(
+        api_base="https://tokenhub.tencentmaas.com/v1",
+        api_key="test-key",
+        default_model="tokenhub/glm-5.3-flash",
+        provider_name="tokenhub",
+    )
+
+    assert provider._resolve_model("tokenhub/glm-5.3-flash") == "openai/glm-5.3-flash"
+
+
+def test_glm_profile_can_route_to_tokenhub_without_changing_product_model_id(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("GLM_5_3_FLASH_PROVIDER", "tokenhub")
+
+    profile = resolve_model_profile("glm-5.3-flash")
+
+    assert profile.id == "glm-5.3-flash"
+    assert profile.provider == "tokenhub"
+    assert profile.model == "tokenhub/glm-5.3-flash"
+
+
+def test_glm_profile_can_preserve_the_existing_openrouter_route(monkeypatch) -> None:
+    monkeypatch.setenv("GLM_5_3_FLASH_PROVIDER", "openrouter")
+
+    profile = resolve_model_profile("glm-5.3-flash")
+
+    assert profile.provider == "openrouter"
+    assert profile.model == "openrouter/z-ai/glm-5.3-flash"
+
+
+def test_glm_profile_rejects_unknown_provider(monkeypatch) -> None:
+    monkeypatch.setenv("GLM_5_3_FLASH_PROVIDER", "unknown")
+
+    with pytest.raises(ValueError, match="Unsupported GLM-5.3-Flash provider"):
+        resolve_model_profile("glm-5.3-flash")
 
 
 def test_zhipu_model_aliases_are_not_double_prefixed(monkeypatch) -> None:
@@ -133,3 +176,38 @@ async def test_request_credentials_override_provider_only_for_current_task(monke
     assert captured[0]["api_base"] == "https://api.deepseek.com"
     assert captured[0]["model"] == "deepseek/deepseek-v4-flash"
     assert captured[1]["api_key"] == "deployment-key"
+
+
+@pytest.mark.asyncio
+async def test_tokenhub_request_credentials_route_one_task_to_tokenhub(monkeypatch) -> None:
+    captured: list[dict[str, object]] = []
+
+    async def fake_completion(**kwargs):
+        captured.append(kwargs)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason="stop", message=SimpleNamespace(content="ok", tool_calls=None)
+                )
+            ],
+            usage=None,
+        )
+
+    monkeypatch.setattr(litellm_provider_module, "acompletion", fake_completion)
+    provider = LiteLLMProvider(
+        api_key="deployment-key",
+        default_model="openrouter/z-ai/glm-5.3-flash",
+        provider_name="openrouter",
+    )
+    token = provider.set_request_credentials(api_key="tokenhub-key", provider="tokenhub")
+    try:
+        await provider.chat(
+            [{"content": "one", "role": "user"}],
+            model="tokenhub/glm-5.3-flash",
+        )
+    finally:
+        provider.reset_request_credentials(token)
+
+    assert captured[0]["api_key"] == "tokenhub-key"
+    assert captured[0]["api_base"] == "https://tokenhub.tencentmaas.com/v1"
+    assert captured[0]["model"] == "openai/glm-5.3-flash"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 
@@ -15,11 +16,6 @@ class ModelProfile:
 
 
 MODEL_PROFILES: dict[str, ModelProfile] = {
-    "glm-5.3-flash": ModelProfile(
-        id="glm-5.3-flash",
-        provider="zhipu",
-        model="glm-5.3-flash",
-    ),
     "deepseek-chat": ModelProfile(
         id="deepseek-chat",
         provider="deepseek",
@@ -27,9 +23,24 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
     ),
 }
 
+_GLM_5_3_FLASH_ROUTES = {
+    "openrouter": "openrouter/z-ai/glm-5.3-flash",
+    "tokenhub": "tokenhub/glm-5.3-flash",
+    "zhipu": "glm-5.3-flash",
+}
+
 
 def resolve_model_profile(profile_id: str) -> ModelProfile:
     """Resolve a trusted gateway profile without accepting raw model IDs."""
+    if profile_id == "glm-5.3-flash":
+        provider = os.environ.get("GLM_5_3_FLASH_PROVIDER", "zhipu").strip().lower()
+        try:
+            model = _GLM_5_3_FLASH_ROUTES[provider]
+        except KeyError as error:
+            raise ValueError(
+                f"Unsupported GLM-5.3-Flash provider: {provider!r}"
+            ) from error
+        return ModelProfile(id=profile_id, provider=provider, model=model)
     try:
         return MODEL_PROFILES[profile_id]
     except KeyError as error:

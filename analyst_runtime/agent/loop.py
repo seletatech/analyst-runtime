@@ -2448,7 +2448,10 @@ class AgentLoop:
             "retry_count": loop_result.retry_count,
         }
         outbound_metadata["model"] = active_model
-        outbound_metadata["runtime_provenance"] = self._runtime_provenance()
+        outbound_metadata["runtime_provenance"] = {
+            **self._runtime_provenance(),
+            "model_provider": trusted_profile.provider if trusted_profile else "unavailable",
+        }
         outbound_metadata["trace_summary"] = self._trace_summary(session.events[turn_event_start:])
         if terminal_error_code:
             outbound_metadata["error_code"] = terminal_error_code
