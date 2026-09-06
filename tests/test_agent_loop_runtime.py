@@ -308,6 +308,7 @@ async def test_runtime_binds_completed_analysis_and_reuses_it_in_the_same_conver
     assert "695" in json.dumps(provider.calls[2], ensure_ascii=False)
     assert "do not search chat sessions" in json.dumps(provider.calls[2]).lower()
     assert "does not approve access to new business data" in json.dumps(provider.calls[2]).lower()
+    assert "interpretation-only turn" in json.dumps(provider.calls[2]).lower()
     assert provider.tool_sets[2] == []
     assert len(provider.calls) == 3
 

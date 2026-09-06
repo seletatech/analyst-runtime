@@ -2229,6 +2229,15 @@ class AgentLoop:
         )
         self._append_system_instruction(initial_messages, bootstrap_instruction)
         self._append_system_instruction(initial_messages, analysis_instruction)
+        if reuse_only:
+            self._append_system_instruction(
+                initial_messages,
+                "The user explicitly asked to keep the prior analysis scope and result "
+                "unchanged. This is an interpretation-only turn: answer now from the active "
+                "approved analysis and explicitly restate its net-loss result. No tools are "
+                "available. Do not announce future data access, recalculation, or additional "
+                "investigation.",
+            )
         self._append_system_instruction(
             initial_messages,
             self._trusted_gateway_system_instruction(msg),
