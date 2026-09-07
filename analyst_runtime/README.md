@@ -26,6 +26,9 @@ This directory is the core Python runtime package. It should stay organized by r
   Python `LLMProvider` interface; frontend stream protocols are outside this package.
 - `model_profiles.py` is the single source of truth for product profile-to-provider/model
   resolution. BYOK verification also goes through `LLMProvider`; gateways only forward it.
+- `providers/registry.py` is the single provider capability catalog. CLI/config/provider
+  code derives supported-provider sets, endpoint environment names, defaults, and model-ID
+  normalization from it instead of repeating provider branches.
 
 ## Cleanup Guidance
 - Use this README to keep the boundary crisp; if neighboring directories feel interchangeable, that is a signal to rename, merge, or archive something.

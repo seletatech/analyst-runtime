@@ -3,8 +3,7 @@ Provider Registry — single source of truth for LLM provider metadata.
 
 Adding a new provider:
   1. Add a ProviderSpec to PROVIDERS below.
-  2. Add a field to ProvidersConfig in config/schema.py.
-  Done. Env vars, prefixing, config matching, status display all derive from here.
+  2. Done. Config fields, env vars, prefixing, matching, and status derive from here.
 
 Order matters — it controls match priority and fallback. Gateways first.
 Every entry writes out all fields so you can copy-paste as a template.
@@ -44,6 +43,19 @@ class ProviderSpec:
     detect_by_key_prefix: str = ""  # match api_key prefix, e.g. "sk-or-"
     detect_by_base_keyword: str = ""  # match substring in api_base URL
     default_api_base: str = ""  # fallback base URL
+    api_base_env: tuple[str, ...] = ()  # ordered environment overrides for api_base
+    request_api_base_env: tuple[str, ...] = ()  # safer per-request override, if narrower
+
+    # Runtime composition. Empty sandbox_default_model means the provider is
+    # available to generic config detection but is not a supported sandbox root.
+    sandbox_default_model: str = ""
+    runtime_model_prefix: str = ""
+    provider_model_env: str = ""
+    consolidation_model_env: str = ""
+    config_api_base_default: str = ""
+    accepts_request_credentials: bool = False
+    name_aliases: tuple[str, ...] = ()
+    model_aliases: tuple[tuple[str, str], ...] = ()
 
     # gateway behavior
     strip_model_prefix: bool = False  # strip "provider/" before re-prefixing
@@ -60,6 +72,17 @@ class ProviderSpec:
     @property
     def label(self) -> str:
         return self.display_name or self.name.title()
+
+    def resolve_model(self, model: str) -> str:
+        """Normalize one model ID for this provider's Runtime adapter."""
+        model = dict(self.model_aliases).get(model, model)
+        if self.runtime_model_prefix and not model.startswith(self.runtime_model_prefix):
+            return f"{self.runtime_model_prefix}{model}"
+        return model
+
+    def request_base_env_names(self) -> tuple[str, ...]:
+        """Return endpoint overrides safe for request-scoped credentials."""
+        return self.request_api_base_env or self.api_base_env
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +115,11 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         detect_by_key_prefix="sk-or-",
         detect_by_base_keyword="openrouter",
         default_api_base="https://openrouter.ai/api/v1",
+        api_base_env=("PROVIDER_BASE_URL", "OPENROUTER_BASE_URL"),
+        request_api_base_env=("OPENROUTER_BASE_URL",),
+        sandbox_default_model="openai/gpt-4o-mini",
+        runtime_model_prefix="openrouter/",
+        accepts_request_credentials=True,
         strip_model_prefix=False,
         model_overrides=(),
     ),
@@ -109,6 +137,10 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         detect_by_key_prefix="",
         detect_by_base_keyword="tokenhub.tencentmaas.com",
         default_api_base="https://tokenhub.tencentmaas.com/v1",
+        api_base_env=("TOKENHUB_BASE_URL",),
+        sandbox_default_model="glm-5.3-flash",
+        runtime_model_prefix="tokenhub/",
+        accepts_request_credentials=True,
         strip_model_prefix=True,
         model_overrides=(),
     ),
@@ -126,6 +158,9 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         detect_by_key_prefix="nvapi-",
         detect_by_base_keyword="integrate.api.nvidia.com",
         default_api_base="https://integrate.api.nvidia.com/v1",
+        api_base_env=("NVIDIA_BASE_URL",),
+        sandbox_default_model="deepseek-ai/deepseek-v4-flash-0731",
+        accepts_request_credentials=True,
         strip_model_prefix=False,
         model_overrides=(
             (
@@ -160,6 +195,9 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         detect_by_key_prefix="",
         detect_by_base_keyword="tokenfactory.nebius.com",
         default_api_base="https://api.tokenfactory.nebius.com/v1",
+        api_base_env=("NEBIUS_BASE_URL",),
+        sandbox_default_model="deepseek-ai/DeepSeek-V4-Flash-0731",
+        accepts_request_credentials=True,
         strip_model_prefix=False,
         model_overrides=(),
     ),
@@ -232,6 +270,12 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         detect_by_key_prefix="",
         detect_by_base_keyword="",
         default_api_base="us-east-1",
+        api_base_env=("AWS_REGION_NAME",),
+        sandbox_default_model="moonshotai.kimi-k2.5",
+        runtime_model_prefix="bedrock/",
+        provider_model_env="BEDROCK_PROVIDER_MODEL_ID",
+        consolidation_model_env="BEDROCK_CONSOLIDATION_MODEL_ID",
+        model_aliases=(("anthropic.claude-sonnet-4-6", "us.anthropic.claude-sonnet-4-6"),),
         strip_model_prefix=False,
         model_overrides=(
             # Kimi K2.5 enforces temperature >= 1.0.
@@ -255,6 +299,9 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         detect_by_key_prefix="",
         detect_by_base_keyword="",
         default_api_base="",
+        api_base_env=("OPENAI_BASE_URL",),
+        sandbox_default_model="gpt-4o-mini",
+        config_api_base_default="https://api.openai.com/v1",
         strip_model_prefix=False,
         model_overrides=(),
     ),
@@ -308,6 +355,10 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         detect_by_key_prefix="",
         detect_by_base_keyword="",
         default_api_base="https://api.deepseek.com",
+        api_base_env=("DEEPSEEK_BASE_URL",),
+        sandbox_default_model="deepseek-chat",
+        runtime_model_prefix="deepseek/",
+        accepts_request_credentials=True,
         strip_model_prefix=False,
         model_overrides=(),
     ),
@@ -347,6 +398,11 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         detect_by_key_prefix="",
         detect_by_base_keyword="",
         default_api_base="https://open.bigmodel.cn/api/paas/v4",
+        api_base_env=("ZAI_BASE_URL",),
+        sandbox_default_model="glm-5.3-flash",
+        runtime_model_prefix="zai/",
+        accepts_request_credentials=True,
+        name_aliases=("bigmodel", "zai"),
         strip_model_prefix=False,
         model_overrides=(
             (
@@ -524,3 +580,16 @@ def find_by_name(name: str) -> ProviderSpec | None:
         if spec.name == name:
             return spec
     return None
+
+
+def canonical_provider_name(name: str) -> str:
+    """Resolve configured aliases to the catalog's canonical provider name."""
+    for spec in PROVIDERS:
+        if name == spec.name or name in spec.name_aliases:
+            return spec.name
+    return name
+
+
+def sandbox_provider_names() -> set[str]:
+    """Return providers that can own the Runtime's root sandbox adapter."""
+    return {spec.name for spec in PROVIDERS if spec.sandbox_default_model}

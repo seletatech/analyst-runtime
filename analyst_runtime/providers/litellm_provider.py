@@ -107,14 +107,7 @@ class LiteLLMProvider(LLMProvider):
     async def verify_request_credentials(self, *, api_key: str, provider: str) -> bool:
         """Verify BYOK without moving provider HTTP behavior into the Web or API."""
         spec = find_by_name(provider)
-        if spec is None or provider not in {
-            "deepseek",
-            "nebius",
-            "nvidia",
-            "openrouter",
-            "tokenhub",
-            "zhipu",
-        }:
+        if spec is None or not spec.accepts_request_credentials:
             return False
         base_url = spec.default_api_base.rstrip("/")
         if not base_url:
@@ -322,18 +315,13 @@ class LiteLLMProvider(LLMProvider):
         """Resolve the endpoint for a trusted per-run provider selection."""
         if not provider:
             return None
-        env_names = {
-            "deepseek": "DEEPSEEK_BASE_URL",
-            "nebius": "NEBIUS_BASE_URL",
-            "nvidia": "NVIDIA_BASE_URL",
-            "openrouter": "OPENROUTER_BASE_URL",
-            "tokenhub": "TOKENHUB_BASE_URL",
-            "zhipu": "ZAI_BASE_URL",
-        }
-        configured = os.environ.get(env_names.get(provider, ""), "").strip()
-        if configured:
-            return configured
         spec = find_by_name(provider)
+        if spec is None or not spec.accepts_request_credentials:
+            return None
+        for env_name in spec.request_base_env_names():
+            configured = os.environ.get(env_name, "").strip()
+            if configured:
+                return configured
         return spec.default_api_base if spec and spec.default_api_base else None
 
     @staticmethod

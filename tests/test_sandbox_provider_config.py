@@ -11,6 +11,65 @@ from analyst_runtime.config.schema import Config
 from analyst_runtime.model_profiles import resolve_model_profile
 from analyst_runtime.providers import litellm_provider as litellm_provider_module
 from analyst_runtime.providers.litellm_provider import LiteLLMProvider
+from analyst_runtime.providers.registry import (
+    PROVIDERS,
+    canonical_provider_name,
+    find_by_name,
+    sandbox_provider_names,
+)
+
+
+def test_provider_catalog_drives_runtime_provider_capabilities() -> None:
+    assert sandbox_provider_names() == {
+        spec.name for spec in PROVIDERS if spec.sandbox_default_model
+    }
+    assert {
+        spec.name for spec in PROVIDERS if spec.accepts_request_credentials
+    } == {
+        "deepseek",
+        "nebius",
+        "nvidia",
+        "openrouter",
+        "tokenhub",
+        "zhipu",
+    }
+
+
+def test_provider_catalog_owns_provider_and_model_aliases() -> None:
+    assert canonical_provider_name("bigmodel") == "zhipu"
+    bedrock = find_by_name("bedrock")
+    assert bedrock is not None
+    assert bedrock.resolve_model("anthropic.claude-sonnet-4-6") == (
+        "bedrock/us.anthropic.claude-sonnet-4-6"
+    )
+
+
+def test_openrouter_request_credentials_ignore_the_generic_sandbox_base() -> None:
+    openrouter = find_by_name("openrouter")
+    assert openrouter is not None
+    assert openrouter.api_base_env == ("PROVIDER_BASE_URL", "OPENROUTER_BASE_URL")
+    assert openrouter.request_base_env_names() == ("OPENROUTER_BASE_URL",)
+
+
+def test_nebius_catalog_owns_model_environment_and_credential_metadata() -> None:
+    spec = find_by_name("nebius")
+
+    assert spec is not None
+    assert spec.sandbox_default_model == "deepseek-ai/DeepSeek-V4-Flash-0731"
+    assert spec.api_base_env == ("NEBIUS_BASE_URL",)
+    assert spec.accepts_request_credentials is True
+    assert spec.resolve_model("deepseek-ai/DeepSeek-V4-Flash-0731") == (
+        "deepseek-ai/DeepSeek-V4-Flash-0731"
+    )
+
+
+def test_provider_enumeration_is_not_duplicated_in_runtime_callers() -> None:
+    from inspect import getsource
+
+    from analyst_runtime.cli import commands
+
+    assert "provider_defaults =" not in getsource(commands._resolve_sandbox_model)
+    assert "env_names =" not in getsource(LiteLLMProvider._request_provider_base)
 
 
 def test_zhipu_sandbox_defaults_to_glm_5_3_flash(monkeypatch) -> None:

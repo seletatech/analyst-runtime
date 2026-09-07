@@ -49,6 +49,20 @@ selection arrives as a trusted profile ID and is resolved here to its provider/m
 verification and model calls both remain behind the Runtime provider port. BYOK secrets must
 be removed from inbound metadata before any log, session event, trace, or outbound message.
 
+### Provider architecture
+
+`analyst_runtime/providers/registry.py` is the single provider catalog. Each `ProviderSpec`
+owns the provider identity, endpoint/environment metadata, model-ID normalization, sandbox
+default, and whether request-scoped credentials are accepted. CLI configuration and the
+LiteLLM adapter derive their supported providers from that catalog; they must not introduce
+their own provider allowlists or endpoint maps.
+
+`LLMProvider` is the stable Runtime port. Add a separate adapter file only when a provider has
+a genuinely different protocol or authentication lifecycle (for example OAuth or Bedrock).
+OpenAI-compatible vendors remain declarative `ProviderSpec` entries and use the shared
+adapter. Switching a product profile is therefore a routing/configuration change inside the
+same agent loop, never a new Runtime implementation.
+
 The active product workspace is supplied by the consuming repository. Its
 `SOUL.md` defines who the agent is and `AGENTS.md` defines how it works. Runtime state,
 customer data, prompts, and artifacts do not belong in this repository.

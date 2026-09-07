@@ -3,26 +3,30 @@
 import asyncio
 import json
 import os
-import signal
-from pathlib import Path
 import select
+import signal
 import sys
+from pathlib import Path
 
 import httpx
-
 import typer
+from prompt_toolkit import PromptSession
+from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.history import FileHistory
+from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.table import Table
 from rich.text import Text
 
-from prompt_toolkit import PromptSession
-from prompt_toolkit.formatted_text import HTML
-from prompt_toolkit.history import FileHistory
-from prompt_toolkit.patch_stdout import patch_stdout
-
-from analyst_runtime import __version__, __logo__
+from analyst_runtime import __logo__, __version__
 from analyst_runtime.config.schema import Config
+from analyst_runtime.providers.registry import (
+    PROVIDERS,
+    canonical_provider_name,
+    find_by_name,
+    sandbox_provider_names,
+)
 
 app = typer.Typer(
     name="analyst-runtime",
@@ -32,11 +36,6 @@ app = typer.Typer(
 
 console = Console()
 EXIT_COMMANDS = {"exit", "quit", "/exit", "/quit", ":q"}
-BEDROCK_MODEL_ALIASES = {
-    "anthropic.claude-sonnet-4-6": "us.anthropic.claude-sonnet-4-6",
-}
-
-
 def _resolve_heartbeat_interval_s(default: int = 60 * 60) -> int:
     """Resolve heartbeat interval from environment with safe fallback."""
     raw = os.environ.get("ANALYST_RUNTIME_HEARTBEAT_INTERVAL_S") or os.environ.get("HEARTBEAT_INTERVAL_S")
@@ -59,94 +58,36 @@ def _resolve_consolidation_model(llm_provider: str) -> str | None:
     Returns None to signal "use the same model as the main agent".
     """
     raw = (os.environ.get("CONSOLIDATION_MODEL_ID") or "").strip()
-
-    if llm_provider == "bedrock":
-        if not raw:
-            return None  # fall back to main agent model
-        resolved = raw.removeprefix("bedrock/")
-        profile = (os.environ.get("BEDROCK_CONSOLIDATION_MODEL_ID") or "").strip()
-        if profile:
-            resolved = profile.removeprefix("bedrock/")
-        return "bedrock/" + resolved
-
-    if llm_provider == "openrouter":
-        if not raw:
-            return None
-        return raw if raw.startswith("openrouter/") else f"openrouter/{raw}"
-
-    if llm_provider == "tokenhub":
-        if not raw:
-            return None
-        return raw if raw.startswith("tokenhub/") else f"tokenhub/{raw}"
-
-    if llm_provider == "deepseek":
-        if not raw:
-            return None
-        return raw if raw.startswith("deepseek/") else f"deepseek/{raw}"
-
-    if llm_provider == "nvidia":
-        return raw or None
-
-    if llm_provider == "nebius":
-        return raw or None
-
-    if llm_provider == "zhipu":
-        if not raw:
-            return None
-        return raw if raw.startswith("zai/") else f"zai/{raw}"
-
-    return raw or None
+    if not raw:
+        return None
+    spec = find_by_name(llm_provider)
+    if spec is None:
+        return raw
+    if spec.consolidation_model_env:
+        raw = (os.environ.get(spec.consolidation_model_env) or raw).strip()
+    return spec.resolve_model(raw.removeprefix(spec.runtime_model_prefix))
 
 
 def _resolve_sandbox_model(llm_provider: str) -> str:
     """Resolve the sandbox runtime model from environment variables."""
-    provider_defaults = {
-        "bedrock": "moonshotai.kimi-k2.5",
-        "openrouter": "openai/gpt-4o-mini",
-        "tokenhub": "glm-5.3-flash",
-        "deepseek": "deepseek-chat",
-        "nebius": "deepseek-ai/DeepSeek-V4-Flash-0731",
-        "nvidia": "deepseek-ai/deepseek-v4-flash-0731",
-        "openai": "gpt-4o-mini",
-        "zhipu": "glm-5.3-flash",
-    }
+    spec = find_by_name(llm_provider) or find_by_name("openrouter")
+    assert spec is not None
     raw_model_id = (
         os.environ.get("LLM_MODEL_ID")
         or os.environ.get("AGENT_MODEL")
-        or provider_defaults.get(llm_provider, "openai/gpt-4o-mini")
+        or spec.sandbox_default_model
     ).strip()
-
-    if llm_provider == "bedrock":
-        resolved = raw_model_id.removeprefix("bedrock/")
-        provider_model_id = (os.environ.get("BEDROCK_PROVIDER_MODEL_ID") or "").strip()
-        canonical_model_id = (os.environ.get("LLM_MODEL_ID") or "").strip().removeprefix("bedrock/")
+    resolved = raw_model_id.removeprefix(spec.runtime_model_prefix)
+    if spec.provider_model_env:
+        provider_model_id = (os.environ.get(spec.provider_model_env) or "").strip()
+        canonical_model_id = (
+            (os.environ.get("LLM_MODEL_ID") or "")
+            .strip()
+            .removeprefix(spec.runtime_model_prefix)
+        )
         if provider_model_id and (not canonical_model_id or resolved == canonical_model_id):
-            resolved = provider_model_id.removeprefix("bedrock/")
-        resolved = BEDROCK_MODEL_ALIASES.get(resolved, resolved)
-        return "bedrock/" + resolved
-
-    if llm_provider == "openrouter":
-        return raw_model_id if raw_model_id.startswith("openrouter/") else f"openrouter/{raw_model_id}"
-
-    if llm_provider == "tokenhub":
-        return raw_model_id if raw_model_id.startswith("tokenhub/") else f"tokenhub/{raw_model_id}"
-
-    if llm_provider == "deepseek":
-        return raw_model_id if raw_model_id.startswith("deepseek/") else f"deepseek/{raw_model_id}"
-
-    if llm_provider == "nvidia":
-        return raw_model_id
-
-    if llm_provider == "nebius":
-        return raw_model_id
-
-    if llm_provider == "openai":
-        return raw_model_id
-
-    if llm_provider == "zhipu":
-        return raw_model_id if raw_model_id.startswith("zai/") else f"zai/{raw_model_id}"
-
-    return raw_model_id if raw_model_id.startswith("openrouter/") else f"openrouter/{raw_model_id}"
+            resolved = provider_model_id.removeprefix(spec.runtime_model_prefix)
+    return spec.resolve_model(resolved)
 
 
 def _split_csv(raw: str) -> list[str]:
@@ -514,9 +455,10 @@ This file stores important information that should persist across sessions.
 def _make_provider(config: Config, *, provider_name: str | None = None):
     """Create the appropriate LLM provider from config."""
     from pathlib import Path
+
+    from analyst_runtime.providers.custom_provider import CustomProvider
     from analyst_runtime.providers.litellm_provider import LiteLLMProvider
     from analyst_runtime.providers.openai_codex_provider import OpenAICodexProvider
-    from analyst_runtime.providers.custom_provider import CustomProvider
 
     model = config.agents.defaults.model
     provider_name = provider_name or config.get_provider_name(model)
@@ -555,7 +497,6 @@ def _make_provider(config: Config, *, provider_name: str | None = None):
             cache_log_path=cache_log_path,
         )
 
-    from analyst_runtime.providers.registry import find_by_name
     spec = find_by_name(provider_name)
     if not (p and p.api_key) and not (spec and spec.is_oauth):
         console.print("[red]Error: No API key configured.[/red]")
@@ -752,17 +693,8 @@ def sandbox():
     sandbox_id = os.environ.get("SANDBOX_ID", "default")
     workspace_path = Path(os.environ.get("WORKSPACE_PATH", "/workspace"))
     llm_provider = os.environ.get("LLM_PROVIDER", "bedrock").strip().lower()
-    llm_provider = {"bigmodel": "zhipu", "zai": "zhipu"}.get(llm_provider, llm_provider)
-    if llm_provider in {
-        "bedrock",
-        "openrouter",
-        "tokenhub",
-        "nebius",
-        "nvidia",
-        "deepseek",
-        "openai",
-        "zhipu",
-    }:
+    llm_provider = canonical_provider_name(llm_provider)
+    if llm_provider in sandbox_provider_names():
         model = _resolve_sandbox_model(llm_provider)
     else:
         logger.warning("Unknown LLM_PROVIDER=%s, falling back to openrouter", llm_provider)
@@ -771,7 +703,6 @@ def sandbox():
 
     gateway_url = os.environ.get("GATEWAY_URL", "http://host.docker.internal:8000")
     gateway_jwt = os.environ.get("GATEWAY_JWT_TOKEN", "")
-    openrouter_base = os.environ.get("PROVIDER_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL")
     telegram_token = (os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("TELEGRAM_TOKEN") or "").strip()
     telegram_allow_from = _split_csv(os.environ.get("TELEGRAM_ALLOW_FROM", ""))
     telegram_send_only = os.environ.get("TELEGRAM_SEND_ONLY", "").lower() == "true"
@@ -811,47 +742,18 @@ def sandbox():
                              "contextCompactThreshold": int(os.environ.get("ANALYST_RUNTIME_CONTEXT_COMPACT_THRESHOLD", "80000")),
                              "contextCompactKeepMessages": int(os.environ.get("ANALYST_RUNTIME_CONTEXT_COMPACT_KEEP_MESSAGES", "12"))}},
         providers={
-            "bedrock": {
-                "apiKey": os.environ.get("AWS_BEARER_TOKEN_BEDROCK", ""),
-                "apiBase": os.environ.get("AWS_REGION_NAME", "us-east-1"),
-            },
-            "openrouter": {
-                "apiKey": os.environ.get("OPENROUTER_API_KEY", ""),
-                "apiBase": openrouter_base,
-            },
-            "tokenhub": {
-                "apiKey": os.environ.get("TOKENHUB_API_KEY", ""),
-                "apiBase": os.environ.get(
-                    "TOKENHUB_BASE_URL", "https://tokenhub.tencentmaas.com/v1"
+            spec.name: {
+                "apiKey": os.environ.get(spec.env_key, "") if spec.env_key else "",
+                "apiBase": next(
+                    (
+                        os.environ[name]
+                        for name in spec.api_base_env
+                        if os.environ.get(name)
+                    ),
+                    spec.config_api_base_default or spec.default_api_base or None,
                 ),
-            },
-            "nvidia": {
-                "apiKey": os.environ.get("NVIDIA_API_KEY", ""),
-                "apiBase": os.environ.get(
-                    "NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1"
-                ),
-            },
-            "nebius": {
-                "apiKey": os.environ.get("NEBIUS_API_KEY", ""),
-                "apiBase": os.environ.get(
-                    "NEBIUS_BASE_URL", "https://api.tokenfactory.nebius.com/v1"
-                ),
-            },
-            "deepseek": {
-                "apiKey": os.environ.get("DEEPSEEK_API_KEY", ""),
-                "apiBase": os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
-            },
-            "openai": {
-                "apiKey": os.environ.get("OPENAI_API_KEY", ""),
-                "apiBase": os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-            },
-            "zhipu": {
-                "apiKey": os.environ.get("ZAI_API_KEY", ""),
-                "apiBase": os.environ.get(
-                    "ZAI_BASE_URL", "https://open.bigmodel.cn/api/paas/v4"
-                ),
-            },
-            "anthropic": {"apiKey": os.environ.get("ANTHROPIC_API_KEY", "")},
+            }
+            for spec in PROVIDERS
         },
         channels=channels_config,
         tools={"restrictToWorkspace": True, "exec": {"timeout": 120}},
