@@ -35,8 +35,8 @@ def _system_text(messages: list[dict]) -> str:
     text_parts = [
         item["text"] for item in content if isinstance(item, dict) and item.get("type") == "text"
     ]
-    assert len(text_parts) == 1
-    return text_parts[0]
+    assert text_parts
+    return "\n\n".join(text_parts)
 
 
 def test_linghui_system_prompt_is_focused_and_within_budget() -> None:

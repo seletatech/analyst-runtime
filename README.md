@@ -9,6 +9,9 @@ The public integration name is **Analyst Runtime**. The Python package is
 `analyst_runtime`, the command is `analyst-runtime`, and product-specific
 identity and behavior live in a supplied workspace rather than in the core.
 
+See [Prompt caching and bounded context](PROMPT_CACHING.md) for provider cache
+behavior, tool-result retention and verification evidence.
+
 ## Origin and attribution
 
 Analyst Runtime began as a deeply modified derivative of

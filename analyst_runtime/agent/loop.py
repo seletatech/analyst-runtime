@@ -1241,9 +1241,14 @@ class AgentLoop:
                             None,
                             self._tool_progress(tool_call, terminal_status, result),
                         )
-                    # Full result goes into messages for the current LLM iteration only
+                    # Bound results on first insertion, not on every later call:
+                    # this keeps the growing prompt prefix stable for provider caching.
+                    # Full evidence remains available in the archive and to binding below.
+                    context_result = self._save_tool_result(
+                        tool_call.id, sanitized_name, result
+                    )
                     messages = self.context.add_tool_result(
-                        messages, tool_call.id, sanitized_name, result
+                        messages, tool_call.id, sanitized_name, context_result
                     )
                     if retry_hint := self._large_file_retry_hint(
                         sanitized_name, tool_call.arguments, result

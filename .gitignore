@@ -40,6 +40,7 @@ tests/e2e/results/
 !tests/test_google_credentials_sync.py
 !tests/test_exec_tool_guard.py
 !tests/test_sandbox_provider_config.py
+!tests/test_prompt_cache_context.py
 !tests/test_telegram_debounce.py
 !tests/test_adapter_registry.py
 !tests/test_tool_registry.py

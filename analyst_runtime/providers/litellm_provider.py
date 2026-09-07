@@ -230,7 +230,9 @@ class LiteLLMProvider(LLMProvider):
         # LiteLLM to reject the request with "max_tokens must be at least 1".
         max_tokens = max(1, max_tokens)
 
-        # Strip cache_control from messages for models that don't support prompt caching.
+        # Claude uses explicit cache_control. Nebius/OpenAI-compatible routes use
+        # server-side prefix reuse; removing Claude markers does NOT disable caching.
+        # Do not send unsupported TTL/breakpoint options to those gateways.
         supports_caching = "anthropic" in model or "claude" in model
         if not supports_caching:
             messages = self._strip_cache_control(messages)
@@ -388,6 +390,14 @@ class LiteLLMProvider(LLMProvider):
             }
             cache_write = getattr(u, "cache_creation_input_tokens", 0) or 0
             cache_read = getattr(u, "cache_read_input_tokens", 0) or 0
+            details = getattr(u, "prompt_tokens_details", None)
+            cached_tokens = (
+                details.get("cached_tokens")
+                if isinstance(details, dict)
+                else getattr(details, "cached_tokens", None)
+            )
+            if cached_tokens is not None:
+                cache_read = cached_tokens
             deepseek_cache_hit = getattr(u, "prompt_cache_hit_tokens", None)
             deepseek_cache_miss = getattr(u, "prompt_cache_miss_tokens", None)
             if deepseek_cache_hit is not None or deepseek_cache_miss is not None:
@@ -396,7 +406,12 @@ class LiteLLMProvider(LLMProvider):
                 usage["prompt_cache_hit_tokens"] = deepseek_cache_hit
                 usage["prompt_cache_miss_tokens"] = deepseek_cache_miss
                 cache_read = deepseek_cache_hit
-            if cache_write or cache_read or deepseek_cache_miss is not None:
+            if (
+                cache_write
+                or cache_read
+                or deepseek_cache_miss is not None
+                or cached_tokens is not None
+            ):
                 usage["cache_write_tokens"] = cache_write
                 usage["cache_read_tokens"] = cache_read
                 logger.info(
