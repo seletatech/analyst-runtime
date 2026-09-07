@@ -17,6 +17,7 @@ class ModelProfile:
 
 _DEEPSEEK_V4_FLASH_ROUTES = {
     "deepseek": "deepseek-v4-flash",
+    "nebius": "deepseek-ai/DeepSeek-V4-Flash-0731",
     "nvidia": "deepseek-ai/deepseek-v4-flash-0731",
 }
 

@@ -182,17 +182,22 @@ async def test_exec_preserves_pqc_analysis_identity_when_result_is_truncated(too
 
 def test_output_scrubs_provider_and_channel_credentials(tool, monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-secret")
+    monkeypatch.setenv("NEBIUS_API_KEY", "nebius-secret")
     monkeypatch.setenv("NVIDIA_API_KEY", "nvidia-secret")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "telegram-secret")
     monkeypatch.setenv("ZAI_API_KEY", "bigmodel-secret")
 
-    scrubbed = tool._scrub_output("deepseek-secret nvidia-secret telegram-secret bigmodel-secret")
+    scrubbed = tool._scrub_output(
+        "deepseek-secret nebius-secret nvidia-secret telegram-secret bigmodel-secret"
+    )
 
     assert "deepseek-secret" not in scrubbed
+    assert "nebius-secret" not in scrubbed
     assert "nvidia-secret" not in scrubbed
     assert "telegram-secret" not in scrubbed
     assert "bigmodel-secret" not in scrubbed
     assert "[REDACTED:DEEPSEEK_API_KEY]" in scrubbed
+    assert "[REDACTED:NEBIUS_API_KEY]" in scrubbed
     assert "[REDACTED:NVIDIA_API_KEY]" in scrubbed
     assert "[REDACTED:TELEGRAM_BOT_TOKEN]" in scrubbed
     assert "[REDACTED:ZAI_API_KEY]" in scrubbed

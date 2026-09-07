@@ -3,9 +3,11 @@ from types import SimpleNamespace
 import pytest
 
 from analyst_runtime.cli.commands import (
+    _make_provider,
     _resolve_consolidation_model,
     _resolve_sandbox_model,
 )
+from analyst_runtime.config.schema import Config
 from analyst_runtime.model_profiles import resolve_model_profile
 from analyst_runtime.providers import litellm_provider as litellm_provider_module
 from analyst_runtime.providers.litellm_provider import LiteLLMProvider
@@ -92,6 +94,44 @@ def test_nvidia_sandbox_uses_openai_compatible_model_id(monkeypatch) -> None:
     monkeypatch.delenv("LLM_MODEL_ID", raising=False)
 
     assert _resolve_sandbox_model("nvidia") == "deepseek-ai/deepseek-v4-flash-0731"
+
+
+def test_deepseek_profile_can_route_to_nebius_without_changing_product_model_id(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("DEEPSEEK_V4_FLASH_PROVIDER", "nebius")
+
+    profile = resolve_model_profile("deepseek-chat")
+
+    assert profile.id == "deepseek-chat"
+    assert profile.provider == "nebius"
+    assert profile.model == "deepseek-ai/DeepSeek-V4-Flash-0731"
+
+
+def test_nebius_sandbox_uses_openai_compatible_model_id(monkeypatch) -> None:
+    monkeypatch.delenv("AGENT_MODEL", raising=False)
+    monkeypatch.delenv("LLM_MODEL_ID", raising=False)
+
+    assert _resolve_sandbox_model("nebius") == "deepseek-ai/DeepSeek-V4-Flash-0731"
+
+
+def test_sandbox_bootstrap_honors_explicit_nebius_provider() -> None:
+    config = Config(
+        agents={"defaults": {"model": "deepseek-ai/DeepSeek-V4-Flash-0731"}},
+        providers={
+            "deepseek": {"apiKey": "deepseek-key"},
+            "nebius": {
+                "apiKey": "nebius-key",
+                "apiBase": "https://api.tokenfactory.nebius.com/v1",
+            },
+        },
+    )
+
+    provider = _make_provider(config, provider_name="nebius")
+
+    assert provider.api_key == "nebius-key"
+    assert provider.api_base == "https://api.tokenfactory.nebius.com/v1"
+    assert provider._gateway.name == "nebius"
 
 
 def test_zhipu_model_aliases_are_not_double_prefixed(monkeypatch) -> None:
@@ -282,3 +322,40 @@ async def test_nvidia_request_credentials_apply_gateway_route_and_reasoning_para
     assert captured["extra_body"] == {
         "chat_template_kwargs": {"thinking": True, "reasoning_effort": "high"}
     }
+
+
+@pytest.mark.asyncio
+async def test_nebius_request_credentials_route_one_task_to_token_factory(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_completion(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason="stop", message=SimpleNamespace(content="ok", tool_calls=None)
+                )
+            ],
+            usage=None,
+        )
+
+    monkeypatch.setattr(litellm_provider_module, "acompletion", fake_completion)
+    provider = LiteLLMProvider(
+        api_key="deployment-key",
+        default_model="openrouter/z-ai/glm-5.3-flash",
+        provider_name="openrouter",
+    )
+    token = provider.set_request_credentials(api_key="nebius-key", provider="nebius")
+    try:
+        await provider.chat(
+            [{"content": "one", "role": "user"}],
+            model="deepseek-ai/DeepSeek-V4-Flash-0731",
+        )
+    finally:
+        provider.reset_request_credentials(token)
+
+    assert captured["api_key"] == "nebius-key"
+    assert captured["api_base"] == "https://api.tokenfactory.nebius.com/v1"
+    assert captured["model"] == "openai/deepseek-ai/DeepSeek-V4-Flash-0731"

@@ -109,6 +109,7 @@ class LiteLLMProvider(LLMProvider):
         spec = find_by_name(provider)
         if spec is None or provider not in {
             "deepseek",
+            "nebius",
             "nvidia",
             "openrouter",
             "tokenhub",
@@ -321,6 +322,7 @@ class LiteLLMProvider(LLMProvider):
             return None
         env_names = {
             "deepseek": "DEEPSEEK_BASE_URL",
+            "nebius": "NEBIUS_BASE_URL",
             "nvidia": "NVIDIA_BASE_URL",
             "openrouter": "OPENROUTER_BASE_URL",
             "tokenhub": "TOKENHUB_BASE_URL",

@@ -87,6 +87,9 @@ def _resolve_consolidation_model(llm_provider: str) -> str | None:
     if llm_provider == "nvidia":
         return raw or None
 
+    if llm_provider == "nebius":
+        return raw or None
+
     if llm_provider == "zhipu":
         if not raw:
             return None
@@ -102,6 +105,7 @@ def _resolve_sandbox_model(llm_provider: str) -> str:
         "openrouter": "openai/gpt-4o-mini",
         "tokenhub": "glm-5.3-flash",
         "deepseek": "deepseek-chat",
+        "nebius": "deepseek-ai/DeepSeek-V4-Flash-0731",
         "nvidia": "deepseek-ai/deepseek-v4-flash-0731",
         "openai": "gpt-4o-mini",
         "zhipu": "glm-5.3-flash",
@@ -131,6 +135,9 @@ def _resolve_sandbox_model(llm_provider: str) -> str:
         return raw_model_id if raw_model_id.startswith("deepseek/") else f"deepseek/{raw_model_id}"
 
     if llm_provider == "nvidia":
+        return raw_model_id
+
+    if llm_provider == "nebius":
         return raw_model_id
 
     if llm_provider == "openai":
@@ -504,7 +511,7 @@ This file stores important information that should persist across sessions.
     skills_dir.mkdir(exist_ok=True)
 
 
-def _make_provider(config: Config):
+def _make_provider(config: Config, *, provider_name: str | None = None):
     """Create the appropriate LLM provider from config."""
     from pathlib import Path
     from analyst_runtime.providers.litellm_provider import LiteLLMProvider
@@ -512,8 +519,12 @@ def _make_provider(config: Config):
     from analyst_runtime.providers.custom_provider import CustomProvider
 
     model = config.agents.defaults.model
-    provider_name = config.get_provider_name(model)
-    p = config.get_provider(model)
+    provider_name = provider_name or config.get_provider_name(model)
+    p = (
+        getattr(config.providers, provider_name, None)
+        if provider_name
+        else config.get_provider(model)
+    )
 
     cache_log_path = Path(config.workspace_path) / "tmp_analysis" / "cache_stats.jsonl"
 
@@ -553,7 +564,8 @@ def _make_provider(config: Config):
 
     return LiteLLMProvider(
         api_key=p.api_key if p else None,
-        api_base=config.get_api_base(model),
+        api_base=(p.api_base if p and p.api_base else None)
+        or (spec.default_api_base if spec and spec.is_gateway else None),
         default_model=model,
         extra_headers=p.extra_headers if p else None,
         provider_name=provider_name,
@@ -745,6 +757,7 @@ def sandbox():
         "bedrock",
         "openrouter",
         "tokenhub",
+        "nebius",
         "nvidia",
         "deepseek",
         "openai",
@@ -818,6 +831,12 @@ def sandbox():
                     "NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1"
                 ),
             },
+            "nebius": {
+                "apiKey": os.environ.get("NEBIUS_API_KEY", ""),
+                "apiBase": os.environ.get(
+                    "NEBIUS_BASE_URL", "https://api.tokenfactory.nebius.com/v1"
+                ),
+            },
             "deepseek": {
                 "apiKey": os.environ.get("DEEPSEEK_API_KEY", ""),
                 "apiBase": os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
@@ -863,7 +882,7 @@ def sandbox():
     )
 
     bus = MessageBus()
-    provider = _make_provider(config)
+    provider = _make_provider(config, provider_name=llm_provider)
     if provider is None:
         logger.error(
             "No provider credentials configured for LLM_PROVIDER=%s. Set the matching environment variables.",
