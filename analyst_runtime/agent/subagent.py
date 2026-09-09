@@ -8,23 +8,9 @@ from typing import Any
 
 from loguru import logger
 
-from analyst_runtime.agent.skills import get_skill_read_roots
-from analyst_runtime.agent.tools.filesystem import (
-    AppendFileTool,
-    EditFileTool,
-    ListDirTool,
-    PatchFileTool,
-    ReadFileTool,
-    WriteFileTool,
-)
-from analyst_runtime.agent.tools.firecrawl import (
-    FirecrawlBrowserTool,
-    FirecrawlScrapeTool,
-    FirecrawlSearchTool,
-)
+from analyst_runtime.agent.context import ContextBuilder
+from analyst_runtime.agent.tool_profiles import register_workspace_analysis_tools
 from analyst_runtime.agent.tools.registry import ToolRegistry
-from analyst_runtime.agent.tools.shell import ExecTool
-from analyst_runtime.agent.tools.web import WebFetchTool
 from analyst_runtime.bus.events import InboundMessage
 from analyst_runtime.bus.queue import MessageBus
 from analyst_runtime.config.schema import ExecToolConfig
@@ -61,6 +47,7 @@ class SubagentManager:
         self.brave_api_key = brave_api_key
         self.exec_config = exec_config or ExecToolConfig()
         self.restrict_to_workspace = restrict_to_workspace
+        self.context = ContextBuilder(workspace)
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
         self._tasks_lock = asyncio.Lock()
 
@@ -198,23 +185,12 @@ class SubagentManager:
     def _build_tools(self) -> ToolRegistry:
         """Build the default tool set used by subagents."""
         tools = ToolRegistry()
-        allowed_dir = self.workspace if self.restrict_to_workspace else None
-        allowed_read_dirs = get_skill_read_roots(self.workspace) if self.restrict_to_workspace else None
-        tools.register(ReadFileTool(allowed_dir=allowed_dir, allowed_dirs=allowed_read_dirs))
-        tools.register(WriteFileTool(allowed_dir=allowed_dir))
-        tools.register(AppendFileTool(allowed_dir=allowed_dir))
-        tools.register(PatchFileTool(allowed_dir=allowed_dir))
-        tools.register(EditFileTool(allowed_dir=allowed_dir))
-        tools.register(ListDirTool(allowed_dir=allowed_dir, allowed_dirs=allowed_read_dirs))
-        tools.register(ExecTool(
-            working_dir=str(self.workspace),
-            timeout=self.exec_config.timeout,
+        register_workspace_analysis_tools(
+            tools,
+            workspace=self.workspace,
+            exec_config=self.exec_config,
             restrict_to_workspace=self.restrict_to_workspace,
-        ))
-        tools.register(WebFetchTool())
-        tools.register(FirecrawlSearchTool())
-        tools.register(FirecrawlScrapeTool())
-        tools.register(FirecrawlBrowserTool())
+        )
         return tools
 
     async def _announce_result(
@@ -256,7 +232,10 @@ Summarize this naturally for the user. Keep it brief (1-2 sentences). Do not men
         now = datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
         tz = _time.strftime("%Z") or "UTC"
 
-        return f"""# Subagent
+        workspace_prompt = self.context.build_system_prompt()
+        return f"""{workspace_prompt}
+
+# Subagent
 
 ## Current Time
 {now} ({tz})
@@ -268,6 +247,8 @@ You are a subagent spawned by the main agent to complete a specific task.
 2. Your final response will be reported back to the main agent
 3. Do not initiate conversations or take on side tasks
 4. Be concise but informative in your findings
+5. Obey all workspace rules above. If the task needs business data, the task must include the
+   user's confirmed definitions and scope; otherwise return that confirmation is still needed.
 
 ## What You Can Do
 - Read and write files in the workspace

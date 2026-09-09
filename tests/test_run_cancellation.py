@@ -144,6 +144,192 @@ async def test_web_channel_publishes_cancel_control_to_the_agent_bus() -> None:
 
 
 @pytest.mark.asyncio
+async def test_web_channel_publishes_steer_control_to_the_same_run() -> None:
+    bus = MagicMock()
+    bus.publish_inbound = AsyncMock()
+    channel = WebChannel(
+        MagicMock(sandbox_id="test-sandbox", gateway_url="http://gateway"),
+        bus,
+    )
+
+    await channel._process_inbound(
+        {
+            "type": "steer_request",
+            "session_id": "chat-run-123",
+            "run_id": "run-123",
+            "conversation_id": "conversation-456",
+            "content": "只看最近三个月",
+            "metadata": {
+                "runtime": "linghui-dashboard-agent",
+                "steer_id": "steer-789",
+            },
+        }
+    )
+
+    published = bus.publish_inbound.await_args.args[0]
+    assert published.execution_key == "web:run-123"
+    assert published.session_key == "web:conversation-456"
+    assert published.content == "只看最近三个月"
+    assert published.metadata["control"] == "steer"
+    assert published.metadata["steer_id"] == "steer-789"
+
+
+@pytest.mark.asyncio
+async def test_web_channel_publishes_steer_status_lookup_without_applying_it() -> None:
+    bus = MagicMock()
+    bus.publish_inbound = AsyncMock()
+    channel = WebChannel(
+        MagicMock(sandbox_id="test-sandbox", gateway_url="http://gateway"),
+        bus,
+    )
+
+    await channel._process_inbound(
+        {
+            "type": "steer_status_request",
+            "session_id": "chat-run-123",
+            "run_id": "run-123",
+            "conversation_id": "conversation-456",
+            "content": "",
+            "metadata": {"steer_id": "steer-789"},
+        }
+    )
+
+    published = bus.publish_inbound.await_args.args[0]
+    assert published.session_key == "web:conversation-456"
+    assert published.metadata["control"] == "steer_status"
+    assert published.metadata["steer_id"] == "steer-789"
+
+
+@pytest.mark.asyncio
+async def test_runtime_reports_duplicate_and_status_lookups_as_pending_once(
+    tmp_path: Path,
+) -> None:
+    bus = MessageBus()
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+    agent = AgentLoop(bus=bus, provider=provider, workspace=tmp_path)
+    agent._connect_mcp = AsyncMock()  # type: ignore[method-assign]
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def process_message(message: InboundMessage):
+        started.set()
+        await release.wait()
+        return OutboundMessage(
+            channel=message.channel,
+            chat_id=message.chat_id,
+            content="done",
+            conversation_id=message.conversation_id,
+            run_id=message.run_id,
+        )
+
+    agent._process_message = process_message  # type: ignore[method-assign]
+    run_task = asyncio.create_task(agent.run())
+    steer = InboundMessage(
+        channel="web",
+        sender_id="chat-run-123",
+        chat_id="chat-run-123",
+        content="只看最近三个月",
+        run_id="run-123",
+        conversation_id="conversation-456",
+        metadata={"control": "steer", "steer_id": "steer-pending"},
+    )
+    try:
+        await bus.publish_inbound(
+            InboundMessage(
+                channel="web",
+                sender_id="chat-run-123",
+                chat_id="chat-run-123",
+                content="分析全年趋势",
+                run_id="run-123",
+                conversation_id="conversation-456",
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=0.5)
+        await bus.publish_inbound(steer)
+        await bus.publish_inbound(steer)
+
+        duplicate = await asyncio.wait_for(bus.consume_outbound(), timeout=0.5)
+        assert duplicate.metadata["control"] == "steer_pending"
+        assert agent._steer_queues[steer.execution_key].qsize() == 1
+
+        await bus.publish_inbound(
+            InboundMessage(
+                channel=steer.channel,
+                sender_id=steer.sender_id,
+                chat_id=steer.chat_id,
+                content="",
+                run_id=steer.run_id,
+                conversation_id=steer.conversation_id,
+                metadata={"control": "steer_status", "steer_id": "steer-pending"},
+            )
+        )
+        status = await asyncio.wait_for(bus.consume_outbound(), timeout=0.5)
+        assert status.metadata["control"] == "steer_pending"
+    finally:
+        release.set()
+        agent.stop()
+        run_task.cancel()
+        await asyncio.gather(run_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_web_channel_routes_credential_verification_to_runtime() -> None:
+    bus = MagicMock()
+    bus.publish_inbound = AsyncMock()
+    channel = WebChannel(
+        MagicMock(sandbox_id="test-sandbox", gateway_url="http://gateway"),
+        bus,
+    )
+
+    await channel._process_inbound(
+        {
+            "type": "provider_credential_verification",
+            "session_id": "chat-credential-123",
+            "content": "",
+            "metadata": {
+                "_provider_credential": {
+                    "api_key": "secret-key",
+                    "provider": "zhipu",
+                    "source": "byok",
+                },
+                "runtime": "linghui-dashboard-agent",
+            },
+        }
+    )
+
+    published = bus.publish_inbound.await_args.args[0]
+    assert published.metadata["control"] == "verify_provider_credential"
+    assert published.metadata["_provider_credential"]["provider"] == "zhipu"
+
+
+@pytest.mark.asyncio
+async def test_web_channel_routes_model_profile_resolution_to_runtime() -> None:
+    bus = MagicMock()
+    bus.publish_inbound = AsyncMock()
+    channel = WebChannel(
+        MagicMock(sandbox_id="test-sandbox", gateway_url="http://gateway"),
+        bus,
+    )
+
+    await channel._process_inbound(
+        {
+            "type": "model_profile_resolution",
+            "session_id": "chat-model-profile-123",
+            "content": "",
+            "metadata": {
+                "model_profile_id": "glm-5.3-flash",
+                "runtime": "linghui-dashboard-agent",
+            },
+        }
+    )
+
+    published = bus.publish_inbound.await_args.args[0]
+    assert published.metadata["control"] == "resolve_model_profile"
+    assert published.metadata["model_profile_id"] == "glm-5.3-flash"
+
+
+@pytest.mark.asyncio
 async def test_cancel_control_stops_the_active_chat_without_stopping_agent(
     tmp_path: Path,
 ) -> None:
@@ -276,9 +462,7 @@ async def test_cancelling_exec_terminates_its_subprocess(tmp_path: Path) -> None
         "time.sleep(30)"
     )
     command = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
-    task = asyncio.create_task(
-        ExecTool(timeout=60, working_dir=str(tmp_path)).execute(command)
-    )
+    task = asyncio.create_task(ExecTool(timeout=60, working_dir=str(tmp_path)).execute(command))
     child_pid: int | None = None
     try:
         for _ in range(100):

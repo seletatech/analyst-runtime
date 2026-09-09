@@ -9,6 +9,9 @@ The public integration name is **Analyst Runtime**. The Python package is
 `analyst_runtime`, the command is `analyst-runtime`, and product-specific
 identity and behavior live in a supplied workspace rather than in the core.
 
+See [Prompt caching and bounded context](PROMPT_CACHING.md) for provider cache
+behavior, tool-result retention and verification evidence.
+
 ## Origin and attribution
 
 Analyst Runtime began as a deeply modified derivative of
@@ -27,10 +30,48 @@ endorsed by the NanoBot project.
 - `bridge/` contains optional channel bridges.
 - `tests/` contains the runtime contract and regression suite.
 
+Analyst Runtime is the only agent orchestrator in consuming products. It owns every model
+call, reasoning step, tool decision/execution, retry, session update, workspace read, and
+final message. UI frameworks may adapt its events for display but must not wrap it in a
+second agent loop.
+
+Run-scoped `steer_request` control messages are accepted only while that run is active. The
+Runtime queues the instruction and applies it after the current tool-call batch (or before a
+text-only response becomes final), persists it as user input, acknowledges `steer_applied`,
+and then continues the same agent loop. The session also persists a bounded set of applied
+`steer_id` values so retries and status lookups are idempotent after transport disconnects. It
+reports a received command as `pending` until the next safe boundary and never starts a parallel
+run for steering.
+
+Vercel AI SDK (`ai` and `@ai-sdk/*`) is forbidden in this repository, including the optional
+Node channel bridges. Python provider access remains behind `LLMProvider`; product model
+selection arrives as a trusted profile ID and is resolved here to its provider/model. BYOK
+verification and model calls both remain behind the Runtime provider port. BYOK secrets must
+be removed from inbound metadata before any log, session event, trace, or outbound message.
+
+### Provider architecture
+
+`analyst_runtime/providers/registry.py` is the single provider catalog. Each `ProviderSpec`
+owns the provider identity, endpoint/environment metadata, model-ID normalization, sandbox
+default, and whether request-scoped credentials are accepted. CLI configuration and the
+LiteLLM adapter derive their supported providers from that catalog; they must not introduce
+their own provider allowlists or endpoint maps.
+
+`LLMProvider` is the stable Runtime port. Add a separate adapter file only when a provider has
+a genuinely different protocol or authentication lifecycle (for example OAuth or Bedrock).
+OpenAI-compatible vendors remain declarative `ProviderSpec` entries and use the shared
+adapter. Switching a product profile is therefore a routing/configuration change inside the
+same agent loop, never a new Runtime implementation.
+
 The active product workspace is supplied by the consuming repository. Its
-`SOUL.md` defines who the agent is, `AGENTS.md` defines how it works, and
-`workspace.json` selects optional runtime capabilities. Runtime state, customer
-data, prompts, and artifacts do not belong in this repository.
+`SOUL.md` defines who the agent is and `AGENTS.md` defines how it works. Runtime state,
+customer data, prompts, and artifacts do not belong in this repository.
+
+Linghui runs the `trusted-analysis` tool profile. It exposes workspace-scoped file and exec
+tools, Web/Firecrawl retrieval, and `message`. It does not expose MCP, Composio, external
+business integrations, audio/vision tools, `spawn`, `cron`, or manufacturing-semantics tools.
+Semantic confirmation is an ordinary system-prompt rule and
+continues through the same Analyst Runtime conversation.
 
 ## Development
 

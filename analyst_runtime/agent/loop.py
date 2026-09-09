@@ -1,49 +1,37 @@
 """Agent loop: the core processing engine."""
 
 import asyncio
+import hashlib
 import json
+import os
 import re
 import uuid
 from contextlib import AsyncExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal
 
 import json_repair
 from loguru import logger
 
+from analyst_runtime.agent.analysis_context import AnalysisArtifactError, AnalysisArtifactStore
 from analyst_runtime.agent.context import ContextBuilder
-from analyst_runtime.agent.skills import get_skill_read_roots
 from analyst_runtime.agent.subagent import SubagentManager
+from analyst_runtime.agent.tool_profiles import register_workspace_analysis_tools
 from analyst_runtime.agent.tools.analyze_image_tool import AnalyzeImageTool
 from analyst_runtime.agent.tools.cron import CronTool
-from analyst_runtime.agent.tools.filesystem import (
-    AppendFileTool,
-    EditFileTool,
-    ListDirTool,
-    PatchFileTool,
-    ReadFileTool,
-    WriteFileTool,
-)
-from analyst_runtime.agent.tools.firecrawl import (
-    FirecrawlBrowserTool,
-    FirecrawlScrapeTool,
-    FirecrawlSearchTool,
-)
+from analyst_runtime.agent.tools.filesystem import ReadFileTool
 from analyst_runtime.agent.tools.message import MessageTool
 from analyst_runtime.agent.tools.registry import ToolRegistry, register_integration_tools
-from analyst_runtime.agent.tools.shell import ExecTool
 from analyst_runtime.agent.tools.spawn import SpawnTool
 from analyst_runtime.agent.tools.transcription_tool import TranscribeAudioTool
 from analyst_runtime.agent.tools.tts_tool import TextToSpeechTool
-from analyst_runtime.agent.tools.web import WebFetchTool
 from analyst_runtime.bus.events import InboundMessage, OutboundMessage
 from analyst_runtime.bus.queue import MessageBus
 from analyst_runtime.config.schema import ExecToolConfig
 from analyst_runtime.cron.service import CronService
-from analyst_runtime.profiles import RuntimeProfiles
-from analyst_runtime.profiles.types import ProfileTurnContext
-from analyst_runtime.providers.base import LLMProvider
+from analyst_runtime.model_profiles import resolve_model_profile
+from analyst_runtime.providers.base import LLMProvider, LLMResponse
 from analyst_runtime.session.manager import HISTORY_SUMMARY_TYPE, Session, SessionManager
 from analyst_runtime.utils.tool_calls import sanitize_tool_name
 from analyst_runtime.workspace import WorkspaceConfiguration
@@ -55,6 +43,7 @@ _MONTHLY_ARTIFACT_ID_RE = re.compile(
     r"monthly-event-reconciliation:"
     r"\d{4}-(?:0[1-9]|1[0-2]):[0-9a-f]{12}"
 )
+_PQC_ANALYSIS_ID_RE = re.compile(r"pqc-defect-loss:[0-9a-f]{64}")
 
 ProgressTool = dict[str, str]
 ProgressCallback = Callable[[str | None, ProgressTool | str | None], Awaitable[None]]
@@ -67,10 +56,39 @@ class AgentLoopResult:
     tools_used: list[str]
     terminal_reason: str
     iterations: int
+    application_retry_count: int
+    model_call_count: int
+    provider_retry_count: int
+    retry_count: int
+    usage: dict[str, int]
+    error_code: str | None = None
 
     def __iter__(self):
         yield self.content
         yield self.tools_used
+
+
+@dataclass
+class RunModelTelemetry:
+    model_call_count: int = 0
+    provider_retry_count: int = 0
+    application_retry_count: int = 0
+    usage: dict[str, int] = field(default_factory=dict)
+
+    def record(self, response: LLMResponse) -> None:
+        retries = max(0, response.retry_count)
+        self.model_call_count += 1 + retries
+        self.provider_retry_count += retries
+        for key, value in response.usage.items():
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                self.usage[key] = self.usage.get(key, 0) + value
+
+    def record_application_retry(self) -> None:
+        self.application_retry_count += 1
+
+    @property
+    def retry_count(self) -> int:
+        return self.provider_retry_count + self.application_retry_count
 
 
 class AgentLoop:
@@ -87,10 +105,158 @@ class AgentLoop:
 
     ITERATION_LIMIT_ERROR_CODE = "ANALYST-RUNTIME-ITERATION-001"
     TOOL_PROTOCOL_ERROR_CODE = "ANALYST-RUNTIME-PROTOCOL-001"
+    MODEL_PROFILE_ERROR_CODE = "ANALYST-RUNTIME-MODEL-001"
+    MODEL_CREDENTIAL_ERROR_CODE = "ANALYST-RUNTIME-CREDENTIAL-001"
+    PROVIDER_ERROR_CODE = "ANALYST-RUNTIME-PROVIDER-001"
 
     @classmethod
     def _support_error_message(cls, error_code: str) -> str:
         return f"分析未完成。Error Code: {error_code}。请将此错误码提供给技术支持。"
+
+    @staticmethod
+    def _content_sha256(value: Any) -> str:
+        encoded = json.dumps(
+            value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
+        ).encode()
+        return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def _explicit_analysis_reuse(content: str) -> bool:
+        """Recognize an explicit request to keep using the prior result unchanged."""
+        compact = re.sub(r"\s+", "", content)
+        prior_markers = ("上一轮", "上一次", "上次", "刚才", "已有", "原有")
+        reuse_markers = ("沿用", "继续使用", "保持", "基于")
+        result_markers = ("结果", "分析", "口径", "范围")
+        unchanged_markers = ("不变", "相同", "同一")
+        references_prior = any(marker in compact for marker in prior_markers)
+        requests_reuse = any(marker in compact for marker in reuse_markers)
+        names_reused_state = any(marker in compact for marker in result_markers)
+        says_unchanged = any(marker in compact for marker in unchanged_markers)
+        return references_prior and requests_reuse and names_reused_state and says_unchanged
+
+    @staticmethod
+    def _explicit_followup_analysis(content: str) -> bool:
+        """Recognize permission to read new evidence for a follow-up analysis."""
+        compact = re.sub(r"\s+", "", content)
+        evidence_actions = ("补查", "查阅", "调取", "读取", "检索")
+        evidence_scopes = ("生产记录", "过程资料", "过程检验", "品质资料", "PQC")
+        analysis_goals = ("原因分析", "根因分析", "过程分析")
+        return any(action in compact for action in evidence_actions) and (
+            any(scope in compact for scope in evidence_scopes)
+            or any(goal in compact for goal in analysis_goals)
+        )
+
+    def _runtime_provenance(self) -> dict[str, str]:
+        def file_hash(relative_path: str) -> str:
+            path = self.workspace / relative_path
+            return (
+                hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "unavailable"
+            )
+
+        return {
+            "product_commit": os.environ.get("ANALYST_RUNTIME_VERSION", "unavailable"),
+            "image_digest": os.environ.get("ANALYST_RUNTIME_IMAGE_DIGEST", "unavailable"),
+            "tool_profile": self.tool_profile,
+            "agents_md_sha256": file_hash("AGENTS.md"),
+            "workspace_data_manifest_sha256": file_hash("data/manifest.json"),
+        }
+
+    @classmethod
+    def _trace_summary(cls, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Return span-ready telemetry without prompts, reasoning, or business payloads."""
+        summary: list[dict[str, Any]] = []
+        for event in events:
+            event_type = str(event.get("type") or "")
+            base = {
+                "type": event_type,
+                "timestamp": event.get("timestamp"),
+                "uuid": event.get("uuid"),
+                "parent_uuid": event.get("parent_uuid"),
+            }
+            if event_type == "user_input":
+                summary.append(
+                    {**base, "content_sha256": cls._content_sha256(event.get("content"))}
+                )
+            elif event_type == "prompt_snapshot":
+                tools = event.get("tools") if isinstance(event.get("tools"), list) else []
+                summary.append(
+                    {
+                        **base,
+                        "prompt_sha256": cls._content_sha256(event.get("content")),
+                        "prompt_chars": len(str(event.get("content") or "")),
+                        "tools_sha256": cls._content_sha256(tools),
+                        "tool_count": len(tools),
+                    }
+                )
+            elif event_type == "model_call":
+                tool_calls = event.get("tool_calls")
+                names = []
+                if isinstance(tool_calls, list):
+                    names = [
+                        str(call.get("function", {}).get("name") or "")
+                        for call in tool_calls
+                        if isinstance(call, dict) and isinstance(call.get("function"), dict)
+                    ]
+                summary.append(
+                    {
+                        **base,
+                        "model": event.get("model"),
+                        "iteration": event.get("iteration"),
+                        "finish_reason": event.get("finish_reason"),
+                        "usage": event.get("usage") or {},
+                        "tool_names": names,
+                    }
+                )
+            elif event_type == "tool_result":
+                summary.append(
+                    {
+                        **base,
+                        "tool_call_id": event.get("tool_use_id"),
+                        "tool_name": event.get("tool_name"),
+                        "input_sha256": cls._content_sha256(event.get("tool_input")),
+                        "output_sha256": cls._content_sha256(event.get("content")),
+                        "status": "completed",
+                    }
+                )
+            elif event_type == "analysis_context":
+                summary.append(
+                    {
+                        **base,
+                        "mode": event.get("mode"),
+                        "analysis_id": event.get("analysis_id"),
+                    }
+                )
+            elif event_type in {"context_compaction", "retry"}:
+                summary.append(
+                    {
+                        **base,
+                        **{
+                            key: value
+                            for key, value in event.items()
+                            if key
+                            in {
+                                "iteration",
+                                "model",
+                                "prompt_tokens",
+                                "messages_before",
+                                "messages_after",
+                                "reason",
+                            }
+                        },
+                    }
+                )
+            elif event_type == "final_response":
+                summary.append(
+                    {
+                        **base,
+                        "model": event.get("model"),
+                        "iterations": event.get("iterations"),
+                        "finish_reason": event.get("finish_reason"),
+                        "usage": event.get("usage") or {},
+                        "tools_used": event.get("tools_used") or [],
+                    }
+                )
+        return summary
 
     def __init__(
         self,
@@ -133,14 +299,10 @@ class AgentLoop:
         self.restrict_to_workspace = restrict_to_workspace
         self.tool_profile = tool_profile
         self.workspace_configuration = WorkspaceConfiguration.load(workspace)
-        self.runtime_profiles = RuntimeProfiles(workspace, self.workspace_configuration)
-
         self.channel_manager = None  # set post-construction by the caller
-        self.context = ContextBuilder(
-            workspace,
-            protected_memory_sections=self.runtime_profiles.protected_memory_sections,
-        )
+        self.context = ContextBuilder(workspace, tool_profile=tool_profile)
         self.sessions = session_manager or SessionManager(workspace)
+        self.analysis_artifacts = AnalysisArtifactStore(workspace)
         self.tools = ToolRegistry()
         self.subagents = SubagentManager(
             provider=provider,
@@ -151,7 +313,7 @@ class AgentLoop:
             max_tokens=self.max_tokens,
             brave_api_key=brave_api_key,
             exec_config=self.exec_config,
-            restrict_to_workspace=restrict_to_workspace,
+            restrict_to_workspace=(restrict_to_workspace or tool_profile == "trusted-analysis"),
         )
 
         self.compress_after_turns = compress_after_turns
@@ -176,10 +338,11 @@ class AgentLoop:
         self._background_tasks: set[asyncio.Task] = set()
         self._active_message_tasks: dict[str, asyncio.Task] = {}
         self._message_queues: dict[str, asyncio.Queue[InboundMessage]] = {}
+        self._steer_queues: dict[str, asyncio.Queue[InboundMessage]] = {}
+        self._pending_steer_ids: set[str] = set()
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._message_semaphore = asyncio.Semaphore(self.max_concurrent_messages)
         self._pending_cancellations: set[str] = set()
-        self._profile_replay_task: asyncio.Task | None = None
         self.bus.add_inbound_listener(self._handle_inbound_control)
         self._register_default_tools()
 
@@ -211,68 +374,47 @@ class AgentLoop:
         if self.tool_profile == "readonly":
             return
         if self.tool_profile == "trusted-analysis":
-            self._register_message_tool()
-            self.runtime_profiles.register_tools(self.tools)
+            self._register_analysis_tools(restrict_to_workspace=True, audit_reads=True)
             return
 
-        # File tools (restrict to workspace if configured)
-        allowed_dir = self.workspace if self.restrict_to_workspace else None
-        allowed_read_dirs = (
-            get_skill_read_roots(self.workspace) if self.restrict_to_workspace else None
-        )
-        self.tools.register(ReadFileTool(allowed_dir=allowed_dir, allowed_dirs=allowed_read_dirs))
-        self.tools.register(WriteFileTool(allowed_dir=allowed_dir))
-        self.tools.register(AppendFileTool(allowed_dir=allowed_dir))
-        self.tools.register(PatchFileTool(allowed_dir=allowed_dir))
-        self.tools.register(EditFileTool(allowed_dir=allowed_dir))
-        self.tools.register(ListDirTool(allowed_dir=allowed_dir, allowed_dirs=allowed_read_dirs))
+        self._register_analysis_tools(restrict_to_workspace=self.restrict_to_workspace)
 
-        # Shell tool
-        self.tools.register(
-            ExecTool(
-                working_dir=str(self.workspace),
-                timeout=self.exec_config.timeout,
-                restrict_to_workspace=self.restrict_to_workspace,
-            )
-        )
-
-        # Web tools
-        self.tools.register(WebFetchTool())
-        self.tools.register(FirecrawlSearchTool())
-        self.tools.register(FirecrawlScrapeTool())
-        self.tools.register(FirecrawlBrowserTool())
-
-        # Message tool
-        self._register_message_tool()
-
-        self.runtime_profiles.register_tools(self.tools)
-
-        # Audio transcription and TTS (Groq — no-op if GROQ_API_KEY not set)
+        # Product profiles stop above. The generic full profile additionally exposes
+        # optional media and external-integration adapters.
         self.tools.register(TranscribeAudioTool())
         self.tools.register(
             TextToSpeechTool(self.workspace, send_callback=self.bus.publish_outbound)
         )
-
-        # Vision analysis for local image files (e.g. video frames)
         self.tools.register(AnalyzeImageTool())
-
-        # Spawn tool (for subagents)
-        spawn_tool = SpawnTool(manager=self.subagents)
-        self.tools.register(spawn_tool)
-
-        # Cron tool (for scheduling)
+        register_integration_tools(self.tools, workspace=self.workspace)
+        self.tools.register(SpawnTool(manager=self.subagents))
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
 
-        # Integration tools (Gmail, Calendar, Notion, YouTube, Maps, Slack, etc.)
-        register_integration_tools(self.tools, workspace=self.workspace)
+    def _register_analysis_tools(
+        self,
+        *,
+        restrict_to_workspace: bool,
+        audit_reads: bool = False,
+    ) -> None:
+        """Register the single Analyst Runtime capability set used by Linghui."""
+        register_workspace_analysis_tools(
+            self.tools,
+            workspace=self.workspace,
+            exec_config=self.exec_config,
+            restrict_to_workspace=restrict_to_workspace,
+            audit_reads=audit_reads,
+        )
+
+        # Message tool
+        self._register_message_tool()
 
     def _register_message_tool(self) -> None:
         self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
 
     async def _connect_mcp(self) -> None:
         """Connect to configured MCP servers (one-time, lazy)."""
-        if self.tool_profile == "readonly":
+        if self.tool_profile != "full":
             return
         if self._mcp_connected or not self._mcp_servers:
             return
@@ -310,17 +452,9 @@ class AgentLoop:
             if isinstance(cron_tool, CronTool):
                 cron_tool.set_context(channel, chat_id)
 
-        self.runtime_profiles.set_tool_context(
-            ProfileTurnContext(
-                channel=channel,
-                chat_id=chat_id,
-                session_key=session_key,
-                user_message=user_message,
-                inbound_turn_id=inbound_turn_id,
-                analysis_conversation_id=analysis_conversation_id,
-                run_id=run_id,
-            )
-        )
+        if read_file_tool := self.tools.get("read_file"):
+            if isinstance(read_file_tool, ReadFileTool):
+                read_file_tool.set_conversation_context(analysis_conversation_id)
 
         for tool_name in self.tools.tool_names:
             tool = self.tools.get(tool_name)
@@ -336,6 +470,12 @@ class AgentLoop:
         """Merge metadata written by tools using their own session manager."""
         persisted = SessionManager(self.workspace).get_or_create(session.key)
         for key, value in persisted.metadata.items():
+            if self.tool_profile != "full" and key in {
+                _AWAITING_COMPOSIO_API_KEY,
+                _PENDING_COMPOSIO_USER_REQUEST,
+                "composio",
+            }:
+                continue
             if (
                 key in {_AWAITING_COMPOSIO_API_KEY, _PENDING_COMPOSIO_USER_REQUEST}
                 and self._composio_credentials_path().exists()
@@ -579,6 +719,16 @@ class AgentLoop:
         except (TypeError, json.JSONDecodeError):
             if not isinstance(result, str) or "... (truncated," not in result:
                 return ""
+            analysis_match = re.search(
+                r'"analysis_id"\s*:\s*"(?P<analysis_id>pqc-defect-loss:[0-9a-f]{64})"',
+                result,
+            )
+            pqc_schema = bool(
+                re.search(r'"schema_version"\s*:\s*"linghui-pqc-defect-loss/v1"', result)
+            )
+            pqc_complete = bool(re.search(r'"status"\s*:\s*"complete"', result))
+            if analysis_match and pqc_schema and pqc_complete:
+                return f"analysis_id={analysis_match.group('analysis_id')}"
             artifact_match = re.search(
                 r'"artifact_id"\s*:\s*"(?P<artifact_id>'
                 r"monthly-event-reconciliation:"
@@ -594,6 +744,14 @@ class AgentLoop:
             return f"artifact_id={artifact_match.group('artifact_id')}"
         if not isinstance(payload, dict):
             return ""
+        analysis_id = payload.get("analysis_id")
+        if (
+            payload.get("schema_version") == "linghui-pqc-defect-loss/v1"
+            and payload.get("status") == "complete"
+            and isinstance(analysis_id, str)
+            and _PQC_ANALYSIS_ID_RE.fullmatch(analysis_id)
+        ):
+            return f"analysis_id={analysis_id}"
         artifact_id = payload.get("artifact_id")
         if not isinstance(artifact_id, str) or not _MONTHLY_ARTIFACT_ID_RE.fullmatch(artifact_id):
             return ""
@@ -601,6 +759,70 @@ class AgentLoop:
         if not isinstance(release_gate, dict) or release_gate.get("passed") is not True:
             return ""
         return f"artifact_id={artifact_id}"
+
+    def _bind_analysis_context(
+        self,
+        session: Session,
+        result: Any,
+        *,
+        parent_uuid: str | None,
+    ) -> str | None:
+        evidence = self._tool_result_evidence(result)
+        if not evidence.startswith("analysis_id="):
+            return parent_uuid
+        analysis_id = evidence.removeprefix("analysis_id=")
+        if session.metadata.get("active_analysis_id") == analysis_id:
+            return parent_uuid
+        try:
+            self.analysis_artifacts.load(analysis_id)
+        except AnalysisArtifactError as error:
+            logger.warning("Refused to bind analysis context {}: {}", analysis_id, error)
+            return parent_uuid
+
+        event_uuid = str(uuid.uuid4())
+        session.metadata["active_analysis_id"] = analysis_id
+        session.add_event(
+            {
+                "uuid": event_uuid,
+                "parent_uuid": parent_uuid,
+                "type": "analysis_context",
+                "mode": "created",
+                "analysis_id": analysis_id,
+            }
+        )
+        self.sessions.save(session)
+        return event_uuid
+
+    def _reuse_analysis_context(
+        self,
+        session: Session,
+        *,
+        parent_uuid: str,
+    ) -> tuple[str | None, bool]:
+        analysis_id = session.metadata.get("active_analysis_id")
+        if not isinstance(analysis_id, str):
+            return None, False
+        try:
+            payload = self.analysis_artifacts.load(analysis_id)
+        except AnalysisArtifactError as error:
+            logger.warning("Bound analysis context {} is unavailable: {}", analysis_id, error)
+            return (
+                "A prior analysis is referenced by this conversation, but its approved "
+                "artifact is unavailable. Do not reuse numeric claims from chat history. "
+                "Explain that the analysis must be run again before quoting a result.",
+                False,
+            )
+
+        session.add_event(
+            {
+                "uuid": str(uuid.uuid4()),
+                "parent_uuid": parent_uuid,
+                "type": "analysis_context",
+                "mode": "reused",
+                "analysis_id": analysis_id,
+            }
+        )
+        return self.analysis_artifacts.system_instruction(payload), True
 
     @staticmethod
     def _guarded_tool_call_signature(name: str, arguments: Any) -> str | None:
@@ -690,6 +912,24 @@ class AgentLoop:
             logger.warning("Failed to save tool result {}: {}", tool_call_id, exc)
             return result  # fall back to full inline if archive fails
 
+    def _session_tool_result_content(
+        self,
+        tool_call_id: str,
+        tool_name: str,
+        result: str,
+    ) -> str:
+        """Persist an approved analysis pointer instead of its full business payload."""
+        evidence = self._tool_result_evidence(result)
+        if evidence.startswith("analysis_id="):
+            analysis_id = evidence.removeprefix("analysis_id=")
+            try:
+                self.analysis_artifacts.load(analysis_id)
+            except AnalysisArtifactError:
+                pass
+            else:
+                return evidence
+        return self._save_tool_result(tool_call_id, tool_name, result)
+
     def _composio_credentials_path(self) -> Path:
         return self.workspace / ".analyst-runtime" / "composio" / "credentials.json"
 
@@ -742,6 +982,8 @@ class AgentLoop:
         session.metadata.pop(_PENDING_COMPOSIO_USER_REQUEST, None)
 
     def _composio_bootstrap_instruction(self, session: Session, current_message: str) -> str | None:
+        if self.tool_profile != "full":
+            return None
         if not session.metadata.get(_AWAITING_COMPOSIO_API_KEY):
             return None
         if self._composio_credentials_path().exists():
@@ -775,16 +1017,18 @@ class AgentLoop:
                 item["text"] = f"{item.get('text', '')}\n\n{instruction}".strip()
                 return
 
+    def _is_trusted_gateway(self, msg: InboundMessage) -> bool:
+        trusted_gateway = self.workspace_configuration.trusted_gateway
+        return bool(
+            trusted_gateway is not None
+            and msg.channel == "web"
+            and msg.metadata.get("runtime") == trusted_gateway.runtime
+            and msg.metadata.get("project_id") == trusted_gateway.project_id
+        )
+
     def _trusted_gateway_system_instruction(self, msg: InboundMessage) -> str | None:
         """Accept policy metadata only from the workspace's trusted web runtime."""
-        trusted_gateway = self.workspace_configuration.trusted_gateway
-        if (
-            trusted_gateway is None
-            or
-            msg.channel != "web"
-            or msg.metadata.get("runtime") != trusted_gateway.runtime
-            or msg.metadata.get("project_id") != trusted_gateway.project_id
-        ):
+        if not self._is_trusted_gateway(msg):
             return None
         instruction = msg.metadata.get("trusted_system_instruction")
         if not isinstance(instruction, str) or not instruction.strip():
@@ -798,6 +1042,8 @@ class AgentLoop:
         session: Session | None = None,
         request_uuid: str | None = None,
         model: str | None = None,
+        execution_key: str | None = None,
+        allow_tools: bool = True,
     ) -> AgentLoopResult:
         """
         Run the agent iteration loop.
@@ -824,22 +1070,79 @@ class AgentLoop:
         _had_midtask_continuation = False  # one-shot: prevents infinite retry on text-only stops
         _delivery_recovery_attempts = 0  # bounded retries for missing final report bodies
         _completed_guarded_tool_calls: dict[str, str] = {}
-        profile_handoff_message: str | None = None
         terminal_reason = "iteration_limit"
+        terminal_error_code: str | None = None
+        model_telemetry = RunModelTelemetry()
+
+        def record_retry(reason: str) -> None:
+            model_telemetry.record_application_retry()
+            if session and request_uuid:
+                session.add_event(
+                    {
+                        "uuid": str(uuid.uuid4()),
+                        "parent_uuid": request_uuid,
+                        "type": "retry",
+                        "model": active_model,
+                        "iteration": iteration,
+                        "reason": reason,
+                    }
+                )
 
         while iteration < self.max_iterations:
             iteration += 1
 
             response = await self.provider.chat(
                 messages=messages,
-                tools=self.tools.get_definitions(),
+                tools=self.tools.get_definitions() if allow_tools else [],
                 model=active_model,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
             )
+            if session and request_uuid:
+                session.add_event(
+                    {
+                        "uuid": str(uuid.uuid4()),
+                        "parent_uuid": request_uuid,
+                        "type": "model_call",
+                        "model": active_model,
+                        "iteration": iteration,
+                        "finish_reason": response.finish_reason,
+                        "usage": response.usage,
+                        "provider_retry_count": response.retry_count,
+                        "tool_calls": [
+                            {
+                                "function": {"name": sanitize_tool_name(tool_call.name)},
+                                "id": tool_call.id,
+                            }
+                            for tool_call in response.tool_calls
+                        ],
+                    }
+                )
+                for _ in range(max(0, response.retry_count)):
+                    session.add_event(
+                        {
+                            "uuid": str(uuid.uuid4()),
+                            "parent_uuid": request_uuid,
+                            "type": "retry",
+                            "model": active_model,
+                            "iteration": iteration,
+                            "reason": "provider_retry",
+                        }
+                    )
+            model_telemetry.record(response)
+
+            if response.finish_reason == "error":
+                terminal_reason = "provider_error"
+                terminal_error_code = response.error_code or self.PROVIDER_ERROR_CODE
+                final_content = None
+                break
 
             if response.has_tool_calls:
                 if on_progress:
+                    # Expose the agent-loop phase without leaking the provider's private
+                    # reasoning_content. Provider-authored public summaries, when present
+                    # in content, are emitted as the next progress item.
+                    await on_progress("Reason", None)
                     clean = self._strip_think(response.content)
                     if clean:
                         await on_progress(clean, None)
@@ -894,21 +1197,7 @@ class AgentLoop:
                     )
                     parent_uuid = llm_uuid
 
-                profile_control_tools = self.runtime_profiles.control_tool_names
-                has_profile_control_call = any(
-                    sanitize_tool_name(tool_call.name) in profile_control_tools
-                    for tool_call in response.tool_calls
-                )
-                pre_execute_calls = (
-                    [
-                        tool_call
-                        for tool_call in response.tool_calls
-                        if sanitize_tool_name(tool_call.name) in profile_control_tools
-                    ]
-                    if has_profile_control_call
-                    else response.tool_calls
-                )
-                pre_results = await self.tools.pre_execute(pre_execute_calls)
+                pre_results = await self.tools.pre_execute(response.tool_calls)
 
                 if _malformed_names:
                     logger.warning(
@@ -935,13 +1224,7 @@ class AgentLoop:
                     logger.info(f"Tool call: {sanitized_name}({args_str[:200]})")
                     if on_progress:
                         await on_progress(None, self._tool_progress(tool_call, "running"))
-                    if profile_handoff_message:
-                        result = self.runtime_profiles.skipped_after_handoff_result()
-                    elif has_profile_control_call and sanitized_name not in profile_control_tools:
-                        result = self.runtime_profiles.blocked_non_control_result(
-                            profile_control_tools
-                        )
-                    elif guarded_signature and guarded_signature in _completed_guarded_tool_calls:
+                    if guarded_signature and guarded_signature in _completed_guarded_tool_calls:
                         result = _completed_guarded_tool_calls[guarded_signature]
                         logger.warning(
                             "Suppressed duplicate successful external tool call in the same turn: {}",
@@ -967,9 +1250,14 @@ class AgentLoop:
                             None,
                             self._tool_progress(tool_call, terminal_status, result),
                         )
-                    # Full result goes into messages for the current LLM iteration only
+                    # Bound results on first insertion, not on every later call:
+                    # this keeps the growing prompt prefix stable for provider caching.
+                    # Full evidence remains available in the archive and to binding below.
+                    context_result = self._save_tool_result(
+                        tool_call.id, sanitized_name, result
+                    )
                     messages = self.context.add_tool_result(
-                        messages, tool_call.id, sanitized_name, result
+                        messages, tool_call.id, sanitized_name, context_result
                     )
                     if retry_hint := self._large_file_retry_hint(
                         sanitized_name, tool_call.arguments, result
@@ -987,7 +1275,11 @@ class AgentLoop:
                     # "tool_use ids were found without tool_result blocks immediately after"
                     if _persist_session:
                         tr_uuid = str(uuid.uuid4())
-                        ref_content = self._save_tool_result(tool_call.id, tool_call.name, result)
+                        ref_content = self._session_tool_result_content(
+                            tool_call.id,
+                            tool_call.name,
+                            result,
+                        )
                         session.add_event(
                             {
                                 "uuid": tr_uuid,
@@ -1001,32 +1293,23 @@ class AgentLoop:
                             }
                         )
                         parent_uuid = tr_uuid
-
-                    if handoff := self.runtime_profiles.handoff_message(sanitized_name, result):
-                        profile_handoff_message = handoff
-
-                if profile_handoff_message:
-                    final_content = profile_handoff_message
-                    terminal_reason = "completed"
-                    if session and request_uuid:
-                        session.add_event(
-                            {
-                                "uuid": str(uuid.uuid4()),
-                                "parent_uuid": parent_uuid,
-                                "type": "final_response",
-                                "message_id": response.message_id,
-                                "model": active_model,
-                                "content": final_content,
-                                "reasoning": None,
-                                "usage": response.usage,
-                                "tools_used": tools_used,
-                                "iterations": iteration,
-                                "finish_reason": self.runtime_profiles.handoff_finish_reason(
-                                    profile_control_tools
-                                ),
-                            }
+                    if session:
+                        parent_uuid = self._bind_analysis_context(
+                            session,
+                            result,
+                            parent_uuid=parent_uuid,
                         )
-                    break
+
+                steered_messages = await self._apply_pending_steers(
+                    execution_key,
+                    messages,
+                    session=session,
+                    parent_uuid=parent_uuid,
+                )
+                if steered_messages:
+                    messages = steered_messages
+                    final_content = None
+                    continue
 
                 # If all tool calls are malformed ID-style names, count failures and
                 # inject a correction prompt so the model can retry.
@@ -1063,14 +1346,31 @@ class AgentLoop:
                             ),
                         }
                     )
+                    if iteration < self.max_iterations:
+                        record_retry("malformed_tool_call")
                 else:
                     _consecutive_malformed = 0
                     _real_iterations += 1
+                messages_before_compaction = messages
                 messages = await self._maybe_compact_active_context(
                     messages,
                     response.usage,
                     model=active_model,
+                    telemetry=model_telemetry,
                 )
+                if messages is not messages_before_compaction and session and request_uuid:
+                    session.add_event(
+                        {
+                            "uuid": str(uuid.uuid4()),
+                            "parent_uuid": request_uuid,
+                            "type": "context_compaction",
+                            "model": active_model,
+                            "iteration": iteration,
+                            "prompt_tokens": response.usage.get("prompt_tokens", 0),
+                            "messages_before": len(messages_before_compaction),
+                            "messages_after": len(messages),
+                        }
+                    )
             elif response.finish_reason == "length":
                 # Model hit max_tokens before finishing — inject a continue prompt
                 # and keep looping rather than breaking mid-task.
@@ -1098,11 +1398,28 @@ class AgentLoop:
                         ),
                     }
                 )
+                messages_before_compaction = messages
                 messages = await self._maybe_compact_active_context(
                     messages,
                     response.usage,
                     model=active_model,
+                    telemetry=model_telemetry,
                 )
+                if messages is not messages_before_compaction and session and request_uuid:
+                    session.add_event(
+                        {
+                            "uuid": str(uuid.uuid4()),
+                            "parent_uuid": request_uuid,
+                            "type": "context_compaction",
+                            "model": active_model,
+                            "iteration": iteration,
+                            "prompt_tokens": response.usage.get("prompt_tokens", 0),
+                            "messages_before": len(messages_before_compaction),
+                            "messages_after": len(messages),
+                        }
+                    )
+                if iteration < self.max_iterations:
+                    record_retry("output_length")
             else:
                 final_content = self._strip_think(response.content)
 
@@ -1129,6 +1446,7 @@ class AgentLoop:
                             "content": "Please respond to the user based on your findings.",
                         }
                     )
+                    record_retry("missing_final_text")
                     continue
 
                 if (
@@ -1166,6 +1484,7 @@ class AgentLoop:
                         }
                     )
                     final_content = None
+                    record_retry("incomplete_delivery")
                     continue
 
                 # Kimi k2.5 sometimes emits a text-only "I'll do X next" announcement
@@ -1204,6 +1523,19 @@ class AgentLoop:
                         }
                     )
                     final_content = None  # don't emit final_response yet
+                    record_retry("text_only_midtask")
+                    continue
+
+                steered_messages = await self._apply_pending_steers(
+                    execution_key,
+                    messages,
+                    session=session,
+                    parent_uuid=parent_uuid,
+                    preceding_assistant=response.content,
+                )
+                if steered_messages:
+                    messages = steered_messages
+                    final_content = None
                     continue
 
                 logger.info(
@@ -1240,7 +1572,137 @@ class AgentLoop:
             tools_used=tools_used,
             terminal_reason=terminal_reason,
             iterations=iteration,
+            application_retry_count=model_telemetry.application_retry_count,
+            model_call_count=model_telemetry.model_call_count,
+            provider_retry_count=model_telemetry.provider_retry_count,
+            retry_count=model_telemetry.retry_count,
+            usage=model_telemetry.usage,
+            error_code=terminal_error_code,
         )
+
+    async def _apply_pending_steers(
+        self,
+        execution_key: str | None,
+        messages: list[dict[str, Any]],
+        *,
+        session: Session | None,
+        parent_uuid: str | None,
+        preceding_assistant: str | None = None,
+    ) -> list[dict[str, Any]] | None:
+        """Apply accepted user steering only at a safe agent-step boundary."""
+        if not execution_key:
+            return None
+        queue = self._steer_queues.get(execution_key)
+        if not queue or queue.empty():
+            return None
+
+        steers: list[InboundMessage] = []
+        while not queue.empty():
+            steers.append(queue.get_nowait())
+            queue.task_done()
+        if not steers:
+            return None
+
+        unapplied = [steer for steer in steers if not self._steer_was_applied(steer)]
+        if not unapplied:
+            for steer in steers:
+                self._pending_steer_ids.discard(str(steer.metadata.get("steer_id") or ""))
+                await self._publish_steer_acknowledgement(steer, applied=True)
+            return messages
+
+        updated = messages
+        if preceding_assistant:
+            updated = self.context.add_assistant_message(
+                updated,
+                preceding_assistant,
+                None,
+            )
+        combined = "\n\n".join(
+            steer.content.strip() for steer in unapplied if steer.content.strip()
+        )
+        updated.append(
+            {
+                "role": "user",
+                "content": (
+                    "[The user added this instruction while you were working. "
+                    "Apply it now to the current task.]\n\n" + combined
+                ),
+            }
+        )
+        if session:
+            applied_ids = list(session.metadata.get("applied_steer_ids") or [])
+            for steer in unapplied:
+                steer_id = str(steer.metadata.get("steer_id") or "")
+                session.add_event(
+                    {
+                        "uuid": str(uuid.uuid4()),
+                        "parent_uuid": parent_uuid,
+                        "type": "user_input",
+                        "steer": True,
+                        "steer_id": steer_id,
+                        "content": steer.content,
+                        "channel": steer.channel,
+                        "chat_id": steer.chat_id,
+                    }
+                )
+                if steer_id and steer_id not in applied_ids:
+                    applied_ids.append(steer_id)
+            session.metadata["applied_steer_ids"] = applied_ids[-512:]
+            # Persist the idempotency record before acknowledging the command.
+            self.sessions.save(session)
+        for steer in steers:
+            self._pending_steer_ids.discard(str(steer.metadata.get("steer_id") or ""))
+            await self._publish_steer_acknowledgement(steer, applied=True)
+        return updated
+
+    def _steer_was_applied(self, steer: InboundMessage) -> bool:
+        steer_id = str(steer.metadata.get("steer_id") or "")
+        if not steer_id:
+            return False
+        session = self.sessions.get_or_create(steer.session_key)
+        return steer_id in set(session.metadata.get("applied_steer_ids") or [])
+
+    async def _publish_steer_acknowledgement(
+        self,
+        steer: InboundMessage,
+        *,
+        applied: bool,
+    ) -> None:
+        await self.bus.publish_outbound(
+            OutboundMessage(
+                channel=steer.channel,
+                chat_id=steer.chat_id,
+                content="",
+                run_id=steer.run_id,
+                conversation_id=steer.conversation_id,
+                metadata={
+                    "control": "steer_applied" if applied else "steer_rejected",
+                    "steer_id": steer.metadata.get("steer_id"),
+                },
+            )
+        )
+
+    async def _reject_pending_steers(self, execution_key: str) -> None:
+        queue = self._steer_queues.pop(execution_key, None)
+        if not queue:
+            return
+        while not queue.empty():
+            steer = queue.get_nowait()
+            queue.task_done()
+            self._pending_steer_ids.discard(str(steer.metadata.get("steer_id") or ""))
+            await self.bus.publish_outbound(
+                OutboundMessage(
+                    channel=steer.channel,
+                    chat_id=steer.chat_id,
+                    content="",
+                    run_id=steer.run_id,
+                    conversation_id=steer.conversation_id,
+                    metadata={
+                        "control": "steer_rejected",
+                        "steer_id": steer.metadata.get("steer_id"),
+                    },
+                )
+            )
 
     async def _maybe_compact_active_context(
         self,
@@ -1248,6 +1710,7 @@ class AgentLoop:
         usage: dict[str, int],
         *,
         model: str,
+        telemetry: RunModelTelemetry | None = None,
     ) -> list[dict[str, Any]]:
         """Replace old model context with a summary after the token threshold."""
         prompt_tokens = int(
@@ -1259,7 +1722,11 @@ class AgentLoop:
         if prompt_tokens < self.context_compact_threshold:
             return messages
 
-        compacted = await self._compact_active_context(messages, model=model)
+        compacted = await self._compact_active_context(
+            messages,
+            model=model,
+            telemetry=telemetry,
+        )
         if compacted is messages:
             return messages
         logger.info(
@@ -1275,6 +1742,7 @@ class AgentLoop:
         messages: list[dict[str, Any]],
         *,
         model: str,
+        telemetry: RunModelTelemetry | None = None,
     ) -> list[dict[str, Any]]:
         """Summarize older messages while preserving system rules and recent work."""
         leading_system_count = 0
@@ -1322,10 +1790,14 @@ class AgentLoop:
                     },
                     {"role": "user", "content": compact_prompt},
                 ],
-                model=self.consolidation_model or model,
+                # Active-context compaction is part of the current billed run.
+                # Use the run model so its usage and price attribution remain exact.
+                model=model,
                 temperature=0,
                 max_tokens=self.max_tokens,
             )
+            if telemetry is not None:
+                telemetry.record(response)
             summary = (response.content or "").strip()
             if not summary:
                 logger.warning("Active context compaction returned an empty summary")
@@ -1354,7 +1826,6 @@ class AgentLoop:
         logger.info("Agent loop started")
 
         while self._running:
-            self._schedule_profile_replay()
             try:
                 msg = await asyncio.wait_for(self.bus.consume_inbound(), timeout=1.0)
                 execution_key = msg.execution_key
@@ -1373,6 +1844,71 @@ class AgentLoop:
                     self._pending_cancellations.discard(execution_key)
                     continue
 
+                if msg.metadata.get("control") == "steer":
+                    if self._steer_was_applied(msg):
+                        await self._publish_steer_acknowledgement(msg, applied=True)
+                        continue
+                    steer_id = str(msg.metadata.get("steer_id") or "")
+                    if steer_id and steer_id in self._pending_steer_ids:
+                        await self.bus.publish_outbound(
+                            OutboundMessage(
+                                channel=msg.channel,
+                                chat_id=msg.chat_id,
+                                content="",
+                                run_id=msg.run_id,
+                                conversation_id=msg.conversation_id,
+                                metadata={
+                                    "control": "steer_pending",
+                                    "steer_id": steer_id,
+                                },
+                            )
+                        )
+                        continue
+                    message_task = self._active_message_tasks.get(execution_key)
+                    if message_task and not message_task.done() and msg.content.strip():
+                        if steer_id:
+                            self._pending_steer_ids.add(steer_id)
+                        self._steer_queues.setdefault(execution_key, asyncio.Queue()).put_nowait(
+                            msg
+                        )
+                    else:
+                        await self.bus.publish_outbound(
+                            OutboundMessage(
+                                channel=msg.channel,
+                                chat_id=msg.chat_id,
+                                content="",
+                                run_id=msg.run_id,
+                                conversation_id=msg.conversation_id,
+                                metadata={
+                                    "control": "steer_rejected",
+                                    "steer_id": msg.metadata.get("steer_id"),
+                                },
+                            )
+                        )
+                    continue
+
+                if msg.metadata.get("control") == "steer_status":
+                    steer_id = str(msg.metadata.get("steer_id") or "")
+                    if self._steer_was_applied(msg):
+                        await self._publish_steer_acknowledgement(msg, applied=True)
+                    elif steer_id in self._pending_steer_ids:
+                        await self.bus.publish_outbound(
+                            OutboundMessage(
+                                channel=msg.channel,
+                                chat_id=msg.chat_id,
+                                content="",
+                                run_id=msg.run_id,
+                                conversation_id=msg.conversation_id,
+                                metadata={
+                                    "control": "steer_pending",
+                                    "steer_id": steer_id,
+                                },
+                            )
+                        )
+                    else:
+                        await self._publish_steer_acknowledgement(msg, applied=False)
+                    continue
+
                 queue = self._message_queues.setdefault(execution_key, asyncio.Queue())
                 queue.put_nowait(msg)
                 message_task = self._active_message_tasks.get(execution_key)
@@ -1383,16 +1919,7 @@ class AgentLoop:
                         self._pending_cancellations.discard(execution_key)
                         message_task.cancel()
             except asyncio.TimeoutError:
-                self._schedule_profile_replay()
                 continue
-
-    def _schedule_profile_replay(self) -> None:
-        if self._profile_replay_task and not self._profile_replay_task.done():
-            return
-        self._profile_replay_task = self._track_task(self._replay_one_profile_event())
-
-    async def _replay_one_profile_event(self) -> None:
-        await self.runtime_profiles.replay_one(self.bus)
 
     async def _process_chat_queue(self, execution_key: str) -> None:
         """Process messages for one execution while other runs proceed independently."""
@@ -1408,6 +1935,7 @@ class AgentLoop:
                 if current_task and current_task.cancelling():
                     break
         finally:
+            await self._reject_pending_steers(execution_key)
             if current_task and current_task.cancelling():
                 while not queue.empty():
                     queue.get_nowait()
@@ -1427,6 +1955,21 @@ class AgentLoop:
                 async with self._message_semaphore:
                     response = await self._process_message(msg)
                     if response:
+                        if not response.metadata.get("control"):
+                            await self.bus.publish_outbound(
+                                OutboundMessage(
+                                    channel=response.channel,
+                                    chat_id=response.chat_id,
+                                    content="Send Message",
+                                    run_id=response.run_id,
+                                    conversation_id=response.conversation_id,
+                                    metadata={
+                                        "intermediate": True,
+                                        "phase": "message",
+                                        "terminal_action": "send_message",
+                                    },
+                                )
+                            )
                         await self.bus.publish_outbound(response)
         except asyncio.CancelledError:
             logger.info("Cancelled active chat run {}", msg.execution_key)
@@ -1473,6 +2016,64 @@ class AgentLoop:
         Returns:
             The response message, or None if no response needed.
         """
+        # Request credentials are trusted transport data, never conversation
+        # metadata. Remove them before logging, persistence, progress, or output.
+        request_credential = msg.metadata.pop("_provider_credential", None)
+        if not self._is_trusted_gateway(msg):
+            request_credential = None
+
+        if msg.metadata.get("control") == "verify_provider_credential":
+            verified = False
+            if isinstance(request_credential, dict):
+                api_key = request_credential.get("api_key")
+                provider_name = request_credential.get("provider")
+                if isinstance(api_key, str) and isinstance(provider_name, str):
+                    verified = await self.provider.verify_request_credentials(
+                        api_key=api_key,
+                        provider=provider_name,
+                    )
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content="",
+                run_id=msg.run_id,
+                conversation_id=msg.conversation_id,
+                metadata={
+                    "control": "provider_credential_verified",
+                    "verified": verified,
+                },
+            )
+
+        if msg.metadata.get("control") == "resolve_model_profile" and self._is_trusted_gateway(msg):
+            profile_id = msg.metadata.get("model_profile_id")
+            try:
+                profile = resolve_model_profile(str(profile_id))
+            except ValueError:
+                return OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content="",
+                    run_id=msg.run_id,
+                    conversation_id=msg.conversation_id,
+                    metadata={
+                        "control": "model_profile_rejected",
+                        "model_profile_id": str(profile_id),
+                    },
+                )
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content="",
+                run_id=msg.run_id,
+                conversation_id=msg.conversation_id,
+                metadata={
+                    "control": "model_profile_resolved",
+                    "model": profile.model,
+                    "model_profile_id": profile.id,
+                    "provider": profile.provider,
+                },
+            )
+
         # System messages route back via chat_id ("channel:chat_id")
         if msg.channel == "system":
             return await self._process_system_message(msg)
@@ -1482,7 +2083,9 @@ class AgentLoop:
 
         key = session_key or msg.session_key
         session = self.sessions.get_or_create(key)
-        if (
+        if self.tool_profile != "full":
+            self._clear_composio_api_key_pending(session)
+        elif (
             session.metadata.get(_AWAITING_COMPOSIO_API_KEY)
             and self._composio_credentials_path().exists()
         ):
@@ -1494,6 +2097,7 @@ class AgentLoop:
             # Capture events before clearing (avoid race condition with background task)
             events_to_archive = session.events.copy()
             session.clear()
+            session.metadata.pop("active_analysis_id", None)
             self.sessions.save(session)
             self.sessions.invalidate(session.key)
 
@@ -1502,11 +2106,16 @@ class AgentLoop:
                 temp_session.events = events_to_archive
                 await self._consolidate_memory(temp_session, archive_all=True)
 
-            self._track_task(_consolidate_and_cleanup())
+            if self.tool_profile != "trusted-analysis":
+                self._track_task(_consolidate_and_cleanup())
             return OutboundMessage(
                 channel=msg.channel,
                 chat_id=msg.chat_id,
-                content="New session started. Memory consolidation in progress.",
+                content=(
+                    "New session started."
+                    if self.tool_profile == "trusted-analysis"
+                    else "New session started. Memory consolidation in progress."
+                ),
             )
         if cmd == "/help":
             return OutboundMessage(
@@ -1624,7 +2233,12 @@ class AgentLoop:
             self.sessions.save(session)
             return None  # TelegramChannel already confirmed via edit_message_text
 
-        if len(session.get_consolidation_events()) > self.memory_window:
+        # The production trusted-analysis profile must not launch model calls
+        # outside the request telemetry returned to the Web usage ledger.
+        if (
+            self.tool_profile != "trusted-analysis"
+            and len(session.get_consolidation_events()) > self.memory_window
+        ):
             self._track_task(self._consolidate_memory(session))
 
         request_uuid = str(uuid.uuid4())
@@ -1644,7 +2258,8 @@ class AgentLoop:
         # twice to the LLM.
         history_snapshot = session.get_history(max_messages=self.memory_window)
 
-        # Emit user_input event
+        # Emit user_input event. The index scopes exported trace telemetry to this turn.
+        turn_event_start = len(session.events)
         session.add_event(
             {
                 "uuid": request_uuid,
@@ -1657,6 +2272,14 @@ class AgentLoop:
             }
         )
 
+        analysis_instruction, active_analysis_available = self._reuse_analysis_context(
+            session,
+            parent_uuid=request_uuid,
+        )
+        reuse_requested = active_analysis_available and self._explicit_analysis_reuse(msg.content)
+        followup_analysis = reuse_requested and self._explicit_followup_analysis(msg.content)
+        interpretation_only = reuse_requested and not followup_analysis
+
         bootstrap_instruction = self._composio_bootstrap_instruction(session, msg.content)
         initial_messages = self.context.build_messages(
             history=history_snapshot,
@@ -1666,6 +2289,29 @@ class AgentLoop:
             chat_id=msg.chat_id,
         )
         self._append_system_instruction(initial_messages, bootstrap_instruction)
+        self._append_system_instruction(initial_messages, analysis_instruction)
+        if interpretation_only:
+            self._append_system_instruction(
+                initial_messages,
+                "The user explicitly asked to keep the prior analysis scope and result "
+                "unchanged without authorizing new evidence access. This is an "
+                "interpretation-only turn: answer now from the active approved analysis and "
+                "explicitly restate its net-loss result. No tools are available. Do not "
+                "announce future data access, recalculation, or investigation.",
+            )
+        elif followup_analysis:
+            self._append_system_instruction(
+                initial_messages,
+                "The user explicitly asked to keep the prior analysis scope and result "
+                "unchanged. Keep the active analysis unchanged as the numeric baseline and "
+                "explicitly restate its net-loss result. Do not rerun or replace that approved "
+                "calculation. Tools remain available for this new follow-up analysis. Perform "
+                "a bounded, targeted investigation against the fixed population: use the exact "
+                "approved artifact path and evidence locators, do not enumerate unrelated "
+                "analysis artifacts, install packages, or scan every workspace file. Conclude "
+                "in this turn with recorded associations, inferences, hypotheses, and explicit "
+                "limitations; do not merely announce future investigation.",
+            )
         self._append_system_instruction(
             initial_messages,
             self._trusted_gateway_system_instruction(msg),
@@ -1681,7 +2327,7 @@ class AgentLoop:
                 "parent_uuid": request_uuid,
                 "type": "prompt_snapshot",
                 "content": system_content,
-                "tools": self.tools.get_definitions(),
+                "tools": self.tools.get_definitions() if not interpretation_only else [],
             }
         )
 
@@ -1711,7 +2357,40 @@ class AgentLoop:
                 )
             )
 
-        active_model = session.metadata.get("model") or self.model
+        trusted_profile = None
+        if self._is_trusted_gateway(msg):
+            profile_id = msg.metadata.get("model_profile_id")
+            if isinstance(profile_id, str):
+                try:
+                    trusted_profile = resolve_model_profile(profile_id)
+                except ValueError:
+                    logger.warning("Rejected unsupported model profile %r", profile_id)
+        if self._is_trusted_gateway(msg) and trusted_profile is None:
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=self._support_error_message(self.MODEL_PROFILE_ERROR_CODE),
+                run_id=msg.run_id,
+                conversation_id=msg.conversation_id,
+                metadata={"error_code": self.MODEL_PROFILE_ERROR_CODE},
+            )
+        if (
+            trusted_profile is not None
+            and isinstance(request_credential, dict)
+            and request_credential.get("provider") != trusted_profile.provider
+        ):
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=self._support_error_message(self.MODEL_CREDENTIAL_ERROR_CODE),
+                run_id=msg.run_id,
+                conversation_id=msg.conversation_id,
+                metadata={"error_code": self.MODEL_CREDENTIAL_ERROR_CODE},
+            )
+        trusted_model = trusted_profile.model if trusted_profile else None
+        # Model selection is frozen for this run and must not mutate the
+        # conversation session's configured default.
+        active_model = trusted_model or session.metadata.get("model") or self.model
 
         # Migrate stale model IDs stored before the bedrock/moonshotai prefix fix.
         # kimi-k2.5 used to be stored as "kimi-k2.5" (routes to Moonshot direct API,
@@ -1730,22 +2409,46 @@ class AgentLoop:
             session.metadata["model"] = migrated
             active_model = migrated
 
-        loop_result = await self._run_agent_loop(
-            initial_messages,
-            on_progress=on_progress or _bus_progress,
-            session=session,
-            request_uuid=request_uuid,
-            model=active_model,
-        )
+        credential_token = None
+        if isinstance(request_credential, dict):
+            api_key = request_credential.get("api_key")
+            provider_name = request_credential.get("provider")
+            if (
+                isinstance(api_key, str)
+                and api_key
+                and trusted_profile is not None
+                and provider_name == trusted_profile.provider
+            ):
+                credential_token = self.provider.set_request_credentials(
+                    api_key=api_key,
+                    provider=trusted_profile.provider,
+                )
+        elif trusted_profile is not None:
+            credential_token = self.provider.set_request_provider(
+                provider=trusted_profile.provider,
+            )
+        try:
+            loop_result = await self._run_agent_loop(
+                initial_messages,
+                on_progress=on_progress or _bus_progress,
+                session=session,
+                request_uuid=request_uuid,
+                model=active_model,
+                execution_key=msg.execution_key,
+                allow_tools=not interpretation_only,
+            )
+        finally:
+            self.provider.reset_request_credentials(credential_token)
         final_content, tools_used = loop_result
 
-        terminal_error_code: str | None = None
+        terminal_error_code = loop_result.error_code
         if final_content is None:
-            terminal_error_code = (
-                self.ITERATION_LIMIT_ERROR_CODE
-                if loop_result.terminal_reason == "iteration_limit"
-                else self.TOOL_PROTOCOL_ERROR_CODE
-            )
+            if terminal_error_code is None:
+                terminal_error_code = (
+                    self.ITERATION_LIMIT_ERROR_CODE
+                    if loop_result.terminal_reason == "iteration_limit"
+                    else self.TOOL_PROTOCOL_ERROR_CODE
+                )
             final_content = self._support_error_message(terminal_error_code)
             # Emit final_response for max-iterations case (loop emits it on normal break)
             session.add_event(
@@ -1763,7 +2466,7 @@ class AgentLoop:
                 }
             )
 
-        if final_content.startswith("Error calling LLM:"):
+        if terminal_error_code:
             logger.error(f"Response to {msg.channel}:{msg.sender_id}: {final_content}")
         else:
             preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
@@ -1782,14 +2485,26 @@ class AgentLoop:
         after, keep = self._session_compress_config.get(
             key, (self.compress_after_turns, self.compress_keep_turns)
         )
-        if session.count_turns() > after:
+        if self.tool_profile != "trusted-analysis" and session.count_turns() > after:
             self._track_task(self._compress_history(key, keep_turns=keep))
 
         # Extract action chips for Telegram (strips <!-- CHIPS: [...] --> from content)
         outbound_metadata = dict(msg.metadata or {})
+        outbound_metadata["usage"] = {
+            **loop_result.usage,
+            "application_retry_count": loop_result.application_retry_count,
+            "model_call_count": loop_result.model_call_count,
+            "provider_retry_count": loop_result.provider_retry_count,
+            "retry_count": loop_result.retry_count,
+        }
+        outbound_metadata["model"] = active_model
+        outbound_metadata["runtime_provenance"] = {
+            **self._runtime_provenance(),
+            "model_provider": trusted_profile.provider if trusted_profile else "unavailable",
+        }
+        outbound_metadata["trace_summary"] = self._trace_summary(session.events[turn_event_start:])
         if terminal_error_code:
             outbound_metadata["error_code"] = terminal_error_code
-        self.runtime_profiles.enrich_outbound_metadata(outbound_metadata)
         if msg.channel == "telegram":
             final_content, chips = self._extract_action_chips(final_content)
             if chips:
@@ -1901,7 +2616,7 @@ class AgentLoop:
         after, keep = self._session_compress_config.get(
             session_key, (self.compress_after_turns, self.compress_keep_turns)
         )
-        if session.count_turns() > after:
+        if self.tool_profile != "trusted-analysis" and session.count_turns() > after:
             self._track_task(self._compress_history(session_key, keep_turns=keep))
 
         return OutboundMessage(

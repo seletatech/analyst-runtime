@@ -40,6 +40,35 @@ class _ToolThenAnswerProvider(LLMProvider):
         return LLMResponse(content="资料目录检查完成。", finish_reason="stop")
 
 
+class _ReasoningOnlyToolProvider(LLMProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    def get_default_model(self) -> str:
+        return "test-model"
+
+    async def chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        model: str | None = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+    ) -> LLMResponse:
+        self.calls += 1
+        if self.calls == 1:
+            return LLMResponse(
+                content=None,
+                reasoning_content="private chain of thought must not be published",
+                finish_reason="tool_calls",
+                tool_calls=[
+                    ToolCallRequest(id="call-1", name="list_dir", arguments={"path": "."})
+                ],
+            )
+        return LLMResponse(content="资料目录检查完成。", finish_reason="stop")
+
+
 class _ConfiguredToolProvider(LLMProvider):
     def __init__(self, tool_name: str, arguments: dict[str, Any]) -> None:
         super().__init__()
@@ -121,6 +150,7 @@ async def test_agent_loop_reports_public_step_and_tool_completion(tmp_path: Path
     assert answer == "资料目录检查完成。"
     assert tools == ["list_dir"]
     assert progress == [
+        ("Reason", None),
         ("正在检查当前资料目录。", None),
         (
             None,
@@ -143,6 +173,39 @@ async def test_agent_loop_reports_public_step_and_tool_completion(tmp_path: Path
             },
         ),
     ]
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_emits_reason_before_tool_when_provider_content_is_empty(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    loop = AgentLoop(
+        bus=MessageBus(),
+        provider=_ReasoningOnlyToolProvider(),
+        workspace=workspace,
+        model="test-model",
+    )
+    progress: list[tuple[str | None, object | None]] = []
+
+    async def capture(text: str | None, tool: object | None) -> None:
+        progress.append((text, tool))
+
+    await loop._run_agent_loop(
+        [{"role": "user", "content": "检查资料"}],
+        on_progress=capture,
+    )
+
+    assert progress[0] == ("Reason", None)
+    assert progress[1][1] == {
+        "detail": ".",
+        "id": "call-1",
+        "kind": "read",
+        "name": "list_dir",
+        "status": "running",
+    }
+    assert "private chain of thought" not in str(progress)
 
 
 def test_tool_progress_redacts_credentials_from_public_command() -> None:

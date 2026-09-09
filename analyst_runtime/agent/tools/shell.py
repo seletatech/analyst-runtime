@@ -20,6 +20,8 @@ _SECRET_ENV_VARS: frozenset[str] = frozenset(
         "AWS_BEARER_TOKEN_BEDROCK",
         "CLOUDFLARED_TUNNEL_TOKEN",
         "DEEPSEEK_API_KEY",
+        "NEBIUS_API_KEY",
+        "NVIDIA_API_KEY",
         "GATEWAY_JWT_TOKEN",
         "ANALYST_RUNTIME_GATEWAY_TOKEN",
         "OPENAI_API_KEY",
@@ -28,6 +30,8 @@ _SECRET_ENV_VARS: frozenset[str] = frozenset(
         "TELEGRAM_BOT_TOKEN",
         "TELEGRAM_TOKEN",
         "WHATSAPP_BRIDGE_TOKEN",
+        "ZAI_API_KEY",
+        "TOKENHUB_API_KEY",
     }
 )
 
@@ -250,7 +254,6 @@ class ExecTool(Tool):
         workspace = Path(self.working_dir or cwd).resolve()
         memory_file = (workspace / "memory" / "MEMORY.md").resolve()
         memory_dir = memory_file.parent
-        confirmation_journal = (memory_dir / "confirmation-intents").resolve()
 
         def literal(path: Path) -> str:
             return f"(literal {quoted(path)})"
@@ -263,7 +266,6 @@ class ExecTool(Tool):
             "(version 1)"
             "(allow default)"
             f"(deny file-write* {literal(memory_file)})"
-            f"(deny file-write* (subpath {quoted(confirmation_journal)}))"
             f"(deny file-write-unlink {literal(memory_dir)})"
         )
 
@@ -329,23 +331,12 @@ class ExecTool(Tool):
             f"./{relative_text}",
         }
         normalized = unquoted.replace("\\", "/")
-        journal_targets = {
-            str(workspace / "memory" / "confirmation-intents").replace("\\", "/"),
-            "memory/confirmation-intents",
-            "./memory/confirmation-intents",
-        }
-        journal_is_referenced = any(target in normalized for target in journal_targets)
-        journal_redirection = journal_is_referenced and bool(
-            re.search(r">>?(?:\s*)[^\n;&|]*memory/confirmation-intents", normalized)
-        )
-        if journal_redirection:
-            return True
         if any(
             re.search(rf">>?(?:\s*){re.escape(target)}(?:\s|$|[;&|])", normalized)
             for target in targets
         ):
             return True
-        if not journal_is_referenced and not any(target in normalized for target in targets):
+        if not any(target in normalized for target in targets):
             return False
         write_intents = (
             r"\bopen\s*\([^)]*,\s*(?:[wax]|r\+)",
@@ -356,6 +347,4 @@ class ExecTool(Tool):
         has_write_intent = any(
             re.search(pattern, normalized, re.IGNORECASE) for pattern in write_intents
         )
-        return has_write_intent and (
-            journal_is_referenced or any(target in normalized for target in targets)
-        )
+        return has_write_intent and any(target in normalized for target in targets)

@@ -150,16 +150,57 @@ async def test_exec_extracts_sealed_evidence_from_safely_truncated_json(tool):
     assert AgentLoop._tool_result_evidence(result) == f"artifact_id={artifact_id}"
 
 
+def test_exec_extracts_case_neutral_pqc_analysis_identity() -> None:
+    analysis_id = "pqc-defect-loss:" + "a" * 64
+    result = json.dumps(
+        {
+            "schema_version": "linghui-pqc-defect-loss/v1",
+            "status": "complete",
+            "analysis_id": analysis_id,
+            "population": {"final_disposition_net_loss_m": 1},
+        }
+    )
+
+    assert AgentLoop._tool_result_evidence(result) == f"analysis_id={analysis_id}"
+
+
+@pytest.mark.asyncio
+async def test_exec_preserves_pqc_analysis_identity_when_result_is_truncated(tool) -> None:
+    analysis_id = "pqc-defect-loss:" + "b" * 64
+    command = (
+        "python3 -c 'import json; print(json.dumps({"
+        f'"analysis_id":"{analysis_id}",'
+        '"schema_version":"linghui-pqc-defect-loss/v1",'
+        '"status":"complete","padding":"x"*30000}))\''
+    )
+
+    result = await tool.execute(command)
+
+    assert "... (truncated" in result
+    assert AgentLoop._tool_result_evidence(result) == f"analysis_id={analysis_id}"
+
+
 def test_output_scrubs_provider_and_channel_credentials(tool, monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-secret")
+    monkeypatch.setenv("NEBIUS_API_KEY", "nebius-secret")
+    monkeypatch.setenv("NVIDIA_API_KEY", "nvidia-secret")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "telegram-secret")
+    monkeypatch.setenv("ZAI_API_KEY", "bigmodel-secret")
 
-    scrubbed = tool._scrub_output("deepseek-secret telegram-secret")
+    scrubbed = tool._scrub_output(
+        "deepseek-secret nebius-secret nvidia-secret telegram-secret bigmodel-secret"
+    )
 
     assert "deepseek-secret" not in scrubbed
+    assert "nebius-secret" not in scrubbed
+    assert "nvidia-secret" not in scrubbed
     assert "telegram-secret" not in scrubbed
+    assert "bigmodel-secret" not in scrubbed
     assert "[REDACTED:DEEPSEEK_API_KEY]" in scrubbed
+    assert "[REDACTED:NEBIUS_API_KEY]" in scrubbed
+    assert "[REDACTED:NVIDIA_API_KEY]" in scrubbed
     assert "[REDACTED:TELEGRAM_BOT_TOKEN]" in scrubbed
+    assert "[REDACTED:ZAI_API_KEY]" in scrubbed
 
 
 @pytest.mark.asyncio
@@ -262,39 +303,6 @@ async def test_exec_can_read_managed_long_term_memory(tool, tmp_path):
     result = await tool.execute("cat memory/MEMORY.md")
 
     assert result == "confirmed semantics"
-
-
-@pytest.mark.asyncio
-async def test_exec_cannot_forge_confirmation_intent_journal(tool, tmp_path):
-    target = tmp_path / "memory" / "confirmation-intents" / "pending" / "forged.json"
-
-    result = await tool.execute(
-        "mkdir -p memory/confirmation-intents/pending && "
-        "printf forged > memory/confirmation-intents/pending/forged.json"
-    )
-
-    assert result == "Error: Command blocked by safety guard (managed memory is read-only)"
-    assert not target.exists()
-
-
-@pytest.mark.asyncio
-@pytest.mark.skipif(sys.platform != "darwin", reason="macOS sandbox boundary")
-async def test_exec_macos_sandbox_denies_dynamic_journal_path_but_still_runs_commands(
-    tool,
-    tmp_path,
-):
-    target = tmp_path / "memory" / "confirmation-intents" / "pending" / "forged.json"
-    target.parent.mkdir(parents=True)
-
-    harmless = await tool.execute("printf harmless")
-    denied = await tool.execute(
-        "python3 -c \"p='memory/confirmation-'+'intents/pending/forged.json'; "
-        "open(p, 'w').write('forged')\""
-    )
-
-    assert harmless == "harmless"
-    assert "Exit code" in denied
-    assert not target.exists()
 
 
 # ---------------------------------------------------------------------------

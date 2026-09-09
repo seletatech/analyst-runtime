@@ -35,12 +35,16 @@ def _system_text(messages: list[dict]) -> str:
     text_parts = [
         item["text"] for item in content if isinstance(item, dict) and item.get("type") == "text"
     ]
-    assert len(text_parts) == 1
-    return text_parts[0]
+    assert text_parts
+    return "\n\n".join(text_parts)
 
 
 def test_linghui_system_prompt_is_focused_and_within_budget() -> None:
-    prompt = ContextBuilder(WORKSPACE, minimal=True).build_system_prompt()
+    prompt = ContextBuilder(
+        WORKSPACE,
+        minimal=True,
+        tool_profile="trusted-analysis",
+    ).build_system_prompt()
 
     assert "经营分析助手" in prompt
     assert "管理决策" in prompt
@@ -49,6 +53,9 @@ def test_linghui_system_prompt_is_focused_and_within_budget() -> None:
     assert "linghui-manufacturing-data-analyst" not in prompt
     assert "review_packet" not in prompt
     assert "source_manifest" not in prompt
+    assert "'cron' tool" not in prompt
+    assert "show_in_ui" not in prompt
+    assert "media, files, or other attachments" not in prompt
     assert len(prompt) < 12_000
 
 
@@ -73,16 +80,17 @@ def test_minimal_system_prompt_loads_project_long_term_memory(tmp_path: Path) ->
 def test_linghui_prompt_requires_semantic_confirmation_before_analysis() -> None:
     prompt = ContextBuilder(WORKSPACE, minimal=True).build_system_prompt()
 
-    assert "数据语义确认卡" in prompt
-    assert "propose_manufacturing_semantics" in prompt
+    assert "待确认的定义与口径" in prompt
     assert "确认并按上述口径分析" in prompt
     assert "确认前不得读取业务数据、执行计算或给出分析数值" in prompt
-    assert "confirm_manufacturing_semantics" in prompt
-    assert "确认写入长期记忆成功后" in prompt
-    assert "defect-loss:HUD-70538" in prompt
-    assert "material-lot-association:release-film" in prompt
-    assert "离型膜 2025-08-28 来料与 2026-01-23 特采关联" in prompt
-    assert "离型膜 1 月 23 日异常与 8 月 28 日用料关联" not in prompt
+    assert "在同一段正常对话中继续分析" in prompt
+    assert "propose_manufacturing_semantics" not in prompt
+    assert "confirm_manufacturing_semantics" not in prompt
+    assert "后台分析任务" not in prompt
+    assert "不良、良率、检验、判定、隔离、客诉" in prompt
+    assert "PQC、OQC、IQC、良率或客诉资料" in prompt
+    assert "生产记录只用于补充批次谱系、生产过程和交叉核验" in prompt
+    assert "70538" not in (WORKSPACE / "AGENTS.md").read_text(encoding="utf-8")
 
 
 def test_every_analysis_prompt_requires_user_visible_business_semantics_confirmation() -> None:
@@ -109,7 +117,7 @@ def test_every_analysis_answer_leads_with_applied_definitions_and_scope() -> Non
     assert "歧义记录的处理方式" in prompt
 
 
-def test_base_prompt_carries_confirmed_wrinkle_class_definition_without_memory(
+def test_base_prompt_carries_generic_defect_loss_contract_without_case_fixture(
     tmp_path: Path,
 ) -> None:
     workspace = tmp_path / "workspace"
@@ -121,10 +129,11 @@ def test_base_prompt_carries_confirmed_wrinkle_class_definition_without_memory(
 
     prompt = ContextBuilder(workspace, minimal=True).build_system_prompt()
 
-    assert "已确认的褶皱类定义" in prompt
-    assert "默认包含 `褶皱`、`抬头纹`、`斜纹`" in prompt
-    assert "默认排除 `压印`、`白点`、`基材异常`" in prompt
-    assert "Composite Defect Record" in prompt
+    assert "对不良或损耗问题" in prompt
+    assert "纳入/排除类别、组合缺陷如何处理" in prompt
+    assert "跨记录和跨工序如何去重" in prompt
+    assert "什么最终判定与处理方式才算净损耗" in prompt
+    assert "70538" not in prompt
 
 
 def test_explicit_skill_names_are_loaded_without_all_workspace_skills(tmp_path: Path) -> None:
