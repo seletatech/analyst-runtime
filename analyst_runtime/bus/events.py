@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
+from uuid import uuid4
 
 from analyst_runtime.bus.delivery import DeliveryAcknowledgement
 
@@ -44,6 +45,7 @@ class OutboundMessage:
     metadata: dict[str, Any] = field(default_factory=dict)
     run_id: str | None = None
     conversation_id: str | None = None
+    event_id: str = field(default_factory=lambda: uuid4().hex, compare=False)
     delivery: DeliveryAcknowledgement | None = field(
         default=None,
         repr=False,
