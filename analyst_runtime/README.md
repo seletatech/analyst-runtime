@@ -84,7 +84,7 @@ This directory is the core Python runtime package. It should stay organized by r
 - `docs/runbooks/` or product scripts when runtime behavior needs operator support
 - Vercel AI SDK packages (`ai`, `@ai-sdk/*`) are forbidden. Provider access goes through the
   Python `LLMProvider` interface; frontend stream protocols are outside this package.
-- `model_profiles.py` is the single source of truth for product profile-to-provider/model
+- `providers/registry.py` is the single source of truth for product profile-to-provider/model
   resolution. BYOK verification also goes through `LLMProvider`; gateways only forward it.
 - `providers/registry.py` is the single provider capability catalog. CLI/config/provider
   code derives supported-provider sets, endpoint environment names, defaults, and model-ID

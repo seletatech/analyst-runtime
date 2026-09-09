@@ -133,7 +133,7 @@ continues through the same Analyst Runtime conversation.
 ## Development
 
 ```bash
-uv sync
+uv sync --extra dev
 uv run pytest
 ```
 

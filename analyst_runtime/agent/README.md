@@ -1,7 +1,7 @@
 # Agent
 
 <!-- project-nav
-{"entrypoints":["__init__.py","context.py","loop.py","memory.py","skills.py"],"owners":[],"truth":{},"production":"analyst-runtime-image"}
+{"entrypoints":["__init__.py","context.py","loop.py","memory.py","routing.py","skills.py","steering.py","telemetry.py"],"owners":[],"truth":{},"production":"analyst-runtime-image"}
 -->
 
 ## 目录职责
@@ -32,8 +32,11 @@ Analyst Runtime 的 agent 子系统，受 Runtime profile 和工具权限约束�
 | [`context.py`](<context.py>) | 本目录的主要实现、配置或受控资料 |
 | [`loop.py`](<loop.py>) | 本目录的主要实现、配置或受控资料 |
 | [`memory.py`](<memory.py>) | 本目录的主要实现、配置或受控资料 |
+| [`routing.py`](<routing.py>) | 受信任 gateway metadata、model profile 与 request-scoped credential 绑定 |
 | [`skills.py`](<skills.py>) | 本目录的主要实现、配置或受控资料 |
+| [`steering.py`](<steering.py>) | Run-scoped steering 的排队、幂等状态、持久化与回执 |
 | [`subagent.py`](<subagent.py>) | 本目录的主要实现、配置或受控资料 |
+| [`telemetry.py`](<telemetry.py>) | 单次运行的模型调用、重试和 token 用量聚合 |
 
 ## 依赖方向
 
@@ -60,8 +63,11 @@ This directory owns the core agent loop, memory hookup, and subagent behavior. I
 - `context.py` - current entrypoint or supporting file in this directory
 - `loop.py` - current entrypoint or supporting file in this directory
 - `memory.py` - current entrypoint or supporting file in this directory
+- `routing.py` - trusted gateway validation and request-scoped provider binding
 - `skills.py` - current entrypoint or supporting file in this directory
+- `steering.py` - run-scoped steering queue, persistence, and acknowledgements
 - `subagent.py` - current entrypoint or supporting file in this directory
+- `telemetry.py` - per-run model usage and retry accounting
 
 ## Dependency Notes
 - `api/` for gateway-authenticated tool access and sandbox lifecycle integration

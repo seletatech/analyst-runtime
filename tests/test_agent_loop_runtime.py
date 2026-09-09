@@ -574,6 +574,57 @@ async def test_runtime_owns_profile_resolution_and_rejects_mismatched_byok(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "credential",
+    [
+        {"provider": "deepseek"},
+        {"api_key": "", "provider": "deepseek"},
+        {"api_key": 123, "provider": "deepseek"},
+    ],
+)
+async def test_runtime_rejects_malformed_byok_before_model_execution(
+    tmp_path: Path,
+    credential: dict[str, object],
+) -> None:
+    (tmp_path / "workspace.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "trusted_gateway": {
+                    "project_id": "linghui-ai-suite",
+                    "runtime": "linghui-dashboard-agent",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    provider = _SequenceProvider([LLMResponse(content="must not run")])
+    agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path)
+    message = InboundMessage(
+        channel="web",
+        sender_id="user",
+        chat_id="chat-run",
+        content="analyze",
+        run_id="run-1",
+        conversation_id="conversation-1",
+        metadata={
+            "_provider_credential": credential,
+            "model_profile_id": "deepseek-chat",
+            "project_id": "linghui-ai-suite",
+            "runtime": "linghui-dashboard-agent",
+        },
+    )
+
+    response = await agent._process_message(message)
+
+    assert provider.models == []
+    assert provider.request_credentials == []
+    assert response is not None
+    assert response.metadata["error_code"] == "ANALYST-RUNTIME-CREDENTIAL-001"
+    assert "_provider_credential" not in message.metadata
+
+
+@pytest.mark.asyncio
 async def test_runtime_uses_the_profile_deployment_provider_for_one_run(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -736,8 +787,9 @@ async def test_runtime_applies_steer_before_the_next_model_step(tmp_path: Path) 
     )
     agent = AgentLoop(bus=bus, provider=provider, workspace=tmp_path)
     execution_key = "web:run-123"
-    agent._steer_queues[execution_key] = asyncio.Queue()
-    agent._steer_queues[execution_key].put_nowait(
+    session = agent.sessions.get_or_create("web:conversation-456")
+    agent.steering.queues[execution_key] = asyncio.Queue()
+    agent.steering.queues[execution_key].put_nowait(
         InboundMessage(
             channel="web",
             sender_id="chat-run-123",
@@ -752,6 +804,7 @@ async def test_runtime_applies_steer_before_the_next_model_step(tmp_path: Path) 
     result = await agent._run_agent_loop(
         [{"role": "user", "content": "分析全年趋势"}],
         execution_key=execution_key,
+        session=session,
     )
 
     assert result.content == "Updated answer for the latest three months."
@@ -765,12 +818,74 @@ async def test_runtime_applies_steer_before_the_next_model_step(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+async def test_runtime_rejects_steer_when_it_cannot_persist_application(tmp_path: Path) -> None:
+    bus = MessageBus()
+    agent = AgentLoop(bus=bus, provider=_SequenceProvider([]), workspace=tmp_path)
+    execution_key = "web:run-123"
+    agent.steering.queues[execution_key] = asyncio.Queue()
+    agent.steering.queues[execution_key].put_nowait(
+        InboundMessage(
+            channel="web",
+            sender_id="chat-run-123",
+            chat_id="chat-run-123",
+            content="只看最近三个月",
+            run_id="run-123",
+            conversation_id="conversation-456",
+            metadata={"control": "steer", "steer_id": "steer-unpersisted"},
+        )
+    )
+
+    updated = await agent.steering.apply_pending(
+        execution_key,
+        [{"role": "user", "content": "分析全年趋势"}],
+        session=None,
+        parent_uuid="request-1",
+    )
+
+    assert updated == [{"role": "user", "content": "分析全年趋势"}]
+    acknowledgement = await bus.consume_outbound()
+    assert acknowledgement.metadata["control"] == "steer_rejected"
+
+
+@pytest.mark.asyncio
+async def test_pending_steer_identity_is_scoped_to_session_and_run(tmp_path: Path) -> None:
+    bus = MessageBus()
+    agent = AgentLoop(bus=bus, provider=_SequenceProvider([]), workspace=tmp_path)
+
+    first = InboundMessage(
+        channel="web",
+        sender_id="chat-run-1",
+        chat_id="chat-run-1",
+        content="first",
+        run_id="run-1",
+        conversation_id="conversation-1",
+        metadata={"control": "steer", "steer_id": "same-id"},
+    )
+    second = InboundMessage(
+        channel="web",
+        sender_id="chat-run-2",
+        chat_id="chat-run-2",
+        content="second",
+        run_id="run-2",
+        conversation_id="conversation-2",
+        metadata={"control": "steer", "steer_id": "same-id"},
+    )
+
+    await agent.steering.handle_control(first, run_active=True)
+    await agent.steering.handle_control(second, run_active=True)
+
+    assert agent.steering.queues[first.execution_key].qsize() == 1
+    assert agent.steering.queues[second.execution_key].qsize() == 1
+    assert bus.outbound.empty()
+
+
+@pytest.mark.asyncio
 async def test_runtime_persists_steer_id_before_acknowledging_it(tmp_path: Path) -> None:
     bus = MessageBus()
     agent = AgentLoop(bus=bus, provider=_SequenceProvider([]), workspace=tmp_path)
     execution_key = "web:run-123"
     session = agent.sessions.get_or_create("web:conversation-456")
-    agent._steer_queues[execution_key] = asyncio.Queue()
+    agent.steering.queues[execution_key] = asyncio.Queue()
     steer = InboundMessage(
         channel="web",
         sender_id="chat-run-123",
@@ -780,9 +895,9 @@ async def test_runtime_persists_steer_id_before_acknowledging_it(tmp_path: Path)
         conversation_id="conversation-456",
         metadata={"control": "steer", "steer_id": "steer-durable"},
     )
-    agent._steer_queues[execution_key].put_nowait(steer)
+    agent.steering.queues[execution_key].put_nowait(steer)
 
-    updated = await agent._apply_pending_steers(
+    updated = await agent.steering.apply_pending(
         execution_key,
         [{"role": "user", "content": "分析全年趋势"}],
         session=session,
@@ -794,7 +909,17 @@ async def test_runtime_persists_steer_id_before_acknowledging_it(tmp_path: Path)
     assert persisted is not None
     assert "steer-durable" in persisted.metadata["applied_steer_ids"]
     assert any(event.get("steer_id") == "steer-durable" for event in persisted.events)
-    assert agent._steer_was_applied(steer) is True
+    assert agent.steering.was_applied(steer) is True
+    same_id_other_run = InboundMessage(
+        channel=steer.channel,
+        sender_id="chat-run-999",
+        chat_id="chat-run-999",
+        content="other run",
+        run_id="run-999",
+        conversation_id=steer.conversation_id,
+        metadata={"control": "steer", "steer_id": "steer-durable"},
+    )
+    assert agent.steering.was_applied(same_id_other_run) is False
     acknowledgement = await bus.consume_outbound()
     assert acknowledgement.metadata["control"] == "steer_applied"
 

@@ -280,7 +280,7 @@ async def test_runtime_reports_duplicate_and_status_lookups_as_pending_once(
 
         duplicate = await asyncio.wait_for(bus.consume_outbound(), timeout=0.5)
         assert duplicate.metadata["control"] == "steer_pending"
-        assert agent._steer_queues[steer.execution_key].qsize() == 1
+        assert agent.steering.queues[steer.execution_key].qsize() == 1
 
         await bus.publish_inbound(
             InboundMessage(
