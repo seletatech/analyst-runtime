@@ -341,6 +341,45 @@ async def test_tokenhub_request_credentials_route_one_task_to_tokenhub(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_profile_deployment_provider_overrides_the_sandbox_root_provider(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_completion(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason="stop", message=SimpleNamespace(content="ok", tool_calls=None)
+                )
+            ],
+            usage=None,
+        )
+
+    monkeypatch.setattr(litellm_provider_module, "acompletion", fake_completion)
+    monkeypatch.setenv("TOKENHUB_API_KEY", "tokenhub-deployment-key")
+    provider = LiteLLMProvider(
+        api_base="https://api.tokenfactory.nebius.com/v1",
+        api_key="nebius-deployment-key",
+        default_model="deepseek-ai/DeepSeek-V4-Flash-0731",
+        provider_name="nebius",
+    )
+    token = provider.set_request_provider(provider="tokenhub")
+    try:
+        await provider.chat(
+            [{"content": "one", "role": "user"}],
+            model="tokenhub/glm-5.3-flash",
+        )
+    finally:
+        provider.reset_request_credentials(token)
+
+    assert captured["api_key"] == "tokenhub-deployment-key"
+    assert captured["api_base"] == "https://tokenhub.tencentmaas.com/v1"
+    assert captured["model"] == "openai/glm-5.3-flash"
+
+
+@pytest.mark.asyncio
 async def test_nvidia_request_credentials_apply_gateway_route_and_reasoning_parameters(
     monkeypatch,
 ) -> None:

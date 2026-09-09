@@ -19,6 +19,8 @@ from analyst_runtime.utils.tool_calls import sanitize_tool_name
 
 _LLM_MAX_ATTEMPTS = 3
 _LLM_RETRY_DELAYS_SECONDS = (0.5, 1.5)
+_PROVIDER_BILLING_ERROR_CODE = "ANALYST-RUNTIME-BILLING-001"
+_PROVIDER_ERROR_CODE = "ANALYST-RUNTIME-PROVIDER-001"
 _request_credentials: ContextVar[tuple[str, str | None, str | None] | None] = ContextVar(
     "analyst_runtime_request_credentials",
     default=None,
@@ -99,6 +101,15 @@ class LiteLLMProvider(LLMProvider):
         provider: str | None = None,
     ) -> Token:
         return _request_credentials.set((api_key, api_base, provider))
+
+    def set_request_provider(self, *, provider: str) -> Token | None:
+        spec = find_by_name(provider)
+        if spec is None:
+            return None
+        api_key = os.environ.get(spec.env_key, "").strip() if spec.env_key else ""
+        return _request_credentials.set(
+            (api_key, self._request_provider_base(provider), provider)
+        )
 
     def reset_request_credentials(self, token: object | None) -> None:
         if isinstance(token, Token):
@@ -247,7 +258,11 @@ class LiteLLMProvider(LLMProvider):
         if request_credentials:
             _, explicit_api_base, request_provider = request_credentials
             request_api_base = explicit_api_base or self._request_provider_base(request_provider)
-        if request_api_key:
+        if request_credentials is not None:
+            # Passing an explicit empty value is safer than falling through to a
+            # different provider's process-wide environment credential.
+            kwargs["api_key"] = request_api_key
+        elif request_api_key:
             kwargs["api_key"] = request_api_key
 
         # Pass api_base for custom endpoints
@@ -306,9 +321,29 @@ class LiteLLMProvider(LLMProvider):
         message = str(last_error) if last_error else "unknown provider error"
         return LLMResponse(
             content=f"Error calling LLM: {message}",
+            error_code=self._provider_error_code(message),
             finish_reason="error",
             retry_count=max(0, attempt - 1),
         )
+
+    @staticmethod
+    def _provider_error_code(message: str) -> str:
+        normalized = message.lower()
+        billing_markers = (
+            "余额不足",
+            "无可用资源包",
+            "insufficient balance",
+            "insufficient credit",
+            "insufficient quota",
+            "free trial quota for the service has been exhausted",
+            "postpaid billing is not enabled",
+            "key limit exceeded (total limit)",
+            "免费体验额度已耗尽",
+            "未开启后付费",
+        )
+        if any(marker in normalized for marker in billing_markers):
+            return _PROVIDER_BILLING_ERROR_CODE
+        return _PROVIDER_ERROR_CODE
 
     @staticmethod
     def _request_provider_base(provider: str | None) -> str | None:

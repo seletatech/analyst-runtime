@@ -30,6 +30,7 @@ class _SequenceProvider(LLMProvider):
         self.models: list[str | None] = []
         self.request_credentials: list[str] = []
         self.request_providers: list[str | None] = []
+        self.deployment_providers: list[str] = []
         self.reset_tokens: list[object | None] = []
         self.verified_credentials: list[tuple[str, str]] = []
 
@@ -43,6 +44,10 @@ class _SequenceProvider(LLMProvider):
         self.request_credentials.append(api_key)
         self.request_providers.append(provider)
         return "credential-token"
+
+    def set_request_provider(self, *, provider: str) -> object:
+        self.deployment_providers.append(provider)
+        return "deployment-provider-token"
 
     def reset_request_credentials(self, token: object | None) -> None:
         self.reset_tokens.append(token)
@@ -569,6 +574,48 @@ async def test_runtime_owns_profile_resolution_and_rejects_mismatched_byok(
 
 
 @pytest.mark.asyncio
+async def test_runtime_uses_the_profile_deployment_provider_for_one_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GLM_5_3_FLASH_PROVIDER", "tokenhub")
+    (tmp_path / "workspace.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "trusted_gateway": {
+                    "project_id": "linghui-ai-suite",
+                    "runtime": "linghui-dashboard-agent",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    provider = _SequenceProvider([LLMResponse(content="done")])
+    agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path)
+    message = InboundMessage(
+        channel="web",
+        sender_id="user",
+        chat_id="chat-run",
+        content="analyze",
+        run_id="run-1",
+        conversation_id="conversation-1",
+        metadata={
+            "model_profile_id": "glm-5.3-flash",
+            "project_id": "linghui-ai-suite",
+            "runtime": "linghui-dashboard-agent",
+        },
+    )
+
+    response = await agent._process_message(message)
+
+    assert response is not None
+    assert response.content == "done"
+    assert provider.deployment_providers == ["tokenhub"]
+    assert provider.reset_tokens == ["deployment-provider-token"]
+
+
+@pytest.mark.asyncio
 async def test_runtime_verifies_provider_credentials_without_echoing_secret(
     tmp_path: Path,
 ) -> None:
@@ -1043,6 +1090,34 @@ async def test_tool_iteration_exhaustion_returns_support_error_code(
 
 
 @pytest.mark.asyncio
+async def test_provider_billing_failure_returns_native_support_error_code(
+    tmp_path: Path,
+) -> None:
+    provider = _SequenceProvider(
+        [
+            LLMResponse(
+                content=(
+                    "Error calling LLM: litellm.RateLimitError: "
+                    "余额不足或无可用资源包,请充值。"
+                ),
+                finish_reason="error",
+                error_code="ANALYST-RUNTIME-BILLING-001",
+            )
+        ]
+    )
+    agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path)
+
+    response = await agent._process_message(_message("provider-billing"))
+
+    assert response is not None
+    assert response.content == (
+        "分析未完成。Error Code: ANALYST-RUNTIME-BILLING-001。"
+        "请将此错误码提供给技术支持。"
+    )
+    assert response.metadata["error_code"] == "ANALYST-RUNTIME-BILLING-001"
+
+
+@pytest.mark.asyncio
 async def test_tool_protocol_abort_is_not_mislabeled_as_iteration_exhaustion(
     tmp_path: Path,
 ) -> None:
@@ -1337,6 +1412,41 @@ async def test_litellm_reports_transport_retries(monkeypatch) -> None:
 
     assert attempts == 2
     assert response.retry_count == 1
+
+
+@pytest.mark.asyncio
+async def test_litellm_classifies_zai_insufficient_balance_as_billing_error(
+    monkeypatch,
+) -> None:
+    from analyst_runtime.providers import litellm_provider
+
+    attempts = 0
+
+    async def fake_completion(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise RuntimeError(
+            "litellm.RateLimitError: RateLimitError: ZaiException - "
+            "Error code: 429 - {'error': {'code': '1113', "
+            "'message': '余额不足或无可用资源包,请充值。'}}"
+        )
+
+    monkeypatch.setattr(litellm_provider, "acompletion", fake_completion)
+    monkeypatch.setattr(litellm_provider, "_LLM_RETRY_DELAYS_SECONDS", (0, 0))
+    provider = LiteLLMProvider(default_model="zai/glm-5.3-flash")
+
+    response = await provider.chat(messages=[{"role": "user", "content": "继续分析"}])
+
+    assert attempts == 1
+    assert response.finish_reason == "error"
+    assert response.error_code == "ANALYST-RUNTIME-BILLING-001"
+    assert LiteLLMProvider._provider_error_code(
+        "The free trial quota for the service has been exhausted and "
+        "postpaid billing is not enabled."
+    ) == "ANALYST-RUNTIME-BILLING-001"
+    assert LiteLLMProvider._provider_error_code(
+        "Key limit exceeded (total limit)."
+    ) == "ANALYST-RUNTIME-BILLING-001"
 
 
 @pytest.mark.asyncio

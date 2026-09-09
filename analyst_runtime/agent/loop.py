@@ -61,6 +61,7 @@ class AgentLoopResult:
     provider_retry_count: int
     retry_count: int
     usage: dict[str, int]
+    error_code: str | None = None
 
     def __iter__(self):
         yield self.content
@@ -106,6 +107,7 @@ class AgentLoop:
     TOOL_PROTOCOL_ERROR_CODE = "ANALYST-RUNTIME-PROTOCOL-001"
     MODEL_PROFILE_ERROR_CODE = "ANALYST-RUNTIME-MODEL-001"
     MODEL_CREDENTIAL_ERROR_CODE = "ANALYST-RUNTIME-CREDENTIAL-001"
+    PROVIDER_ERROR_CODE = "ANALYST-RUNTIME-PROVIDER-001"
 
     @classmethod
     def _support_error_message(cls, error_code: str) -> str:
@@ -1069,6 +1071,7 @@ class AgentLoop:
         _delivery_recovery_attempts = 0  # bounded retries for missing final report bodies
         _completed_guarded_tool_calls: dict[str, str] = {}
         terminal_reason = "iteration_limit"
+        terminal_error_code: str | None = None
         model_telemetry = RunModelTelemetry()
 
         def record_retry(reason: str) -> None:
@@ -1127,6 +1130,12 @@ class AgentLoop:
                         }
                     )
             model_telemetry.record(response)
+
+            if response.finish_reason == "error":
+                terminal_reason = "provider_error"
+                terminal_error_code = response.error_code or self.PROVIDER_ERROR_CODE
+                final_content = None
+                break
 
             if response.has_tool_calls:
                 if on_progress:
@@ -1568,6 +1577,7 @@ class AgentLoop:
             provider_retry_count=model_telemetry.provider_retry_count,
             retry_count=model_telemetry.retry_count,
             usage=model_telemetry.usage,
+            error_code=terminal_error_code,
         )
 
     async def _apply_pending_steers(
@@ -2413,6 +2423,10 @@ class AgentLoop:
                     api_key=api_key,
                     provider=trusted_profile.provider,
                 )
+        elif trusted_profile is not None:
+            credential_token = self.provider.set_request_provider(
+                provider=trusted_profile.provider,
+            )
         try:
             loop_result = await self._run_agent_loop(
                 initial_messages,
@@ -2427,13 +2441,14 @@ class AgentLoop:
             self.provider.reset_request_credentials(credential_token)
         final_content, tools_used = loop_result
 
-        terminal_error_code: str | None = None
+        terminal_error_code = loop_result.error_code
         if final_content is None:
-            terminal_error_code = (
-                self.ITERATION_LIMIT_ERROR_CODE
-                if loop_result.terminal_reason == "iteration_limit"
-                else self.TOOL_PROTOCOL_ERROR_CODE
-            )
+            if terminal_error_code is None:
+                terminal_error_code = (
+                    self.ITERATION_LIMIT_ERROR_CODE
+                    if loop_result.terminal_reason == "iteration_limit"
+                    else self.TOOL_PROTOCOL_ERROR_CODE
+                )
             final_content = self._support_error_message(terminal_error_code)
             # Emit final_response for max-iterations case (loop emits it on normal break)
             session.add_event(
@@ -2451,7 +2466,7 @@ class AgentLoop:
                 }
             )
 
-        if final_content.startswith("Error calling LLM:"):
+        if terminal_error_code:
             logger.error(f"Response to {msg.channel}:{msg.sender_id}: {final_content}")
         else:
             preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
