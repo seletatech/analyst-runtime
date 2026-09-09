@@ -1,7 +1,7 @@
 """Async message queue for decoupled channel-agent communication."""
 
 import asyncio
-from typing import Callable, Awaitable
+from typing import Awaitable, Callable
 
 from loguru import logger
 
@@ -11,11 +11,11 @@ from analyst_runtime.bus.events import InboundMessage, OutboundMessage
 class MessageBus:
     """
     Async message bus that decouples chat channels from the agent core.
-    
+
     Channels push messages to the inbound queue, and the agent processes
     them and pushes responses to the outbound queue.
     """
-    
+
     _MAX_QUEUE_SIZE = 1000
 
     def __init__(self):
@@ -39,31 +39,31 @@ class MessageBus:
                 asyncio.create_task(listener(msg))
             except Exception as exc:
                 logger.debug("Inbound listener error: %s", exc)
-    
+
     async def consume_inbound(self) -> InboundMessage:
         """Consume the next inbound message (blocks until available)."""
         return await self.inbound.get()
-    
+
     async def publish_outbound(self, msg: OutboundMessage) -> None:
         """Publish a response from the agent to channels."""
         if self.outbound.full():
             logger.warning("Outbound queue is full (%d messages) — blocking until space available", self._MAX_QUEUE_SIZE)
         await self.outbound.put(msg)
-    
+
     async def consume_outbound(self) -> OutboundMessage:
         """Consume the next outbound message (blocks until available)."""
         return await self.outbound.get()
-    
+
     def subscribe_outbound(
-        self, 
-        channel: str, 
+        self,
+        channel: str,
         callback: Callable[[OutboundMessage], Awaitable[None]]
     ) -> None:
         """Subscribe to outbound messages for a specific channel."""
         if channel not in self._outbound_subscribers:
             self._outbound_subscribers[channel] = []
         self._outbound_subscribers[channel].append(callback)
-    
+
     async def dispatch_outbound(self) -> None:
         """
         Dispatch outbound messages to subscribed channels.
@@ -81,16 +81,16 @@ class MessageBus:
                         logger.error(f"Error dispatching to {msg.channel}: {e}")
             except asyncio.TimeoutError:
                 continue
-    
+
     def stop(self) -> None:
         """Stop the dispatcher loop."""
         self._running = False
-    
+
     @property
     def inbound_size(self) -> int:
         """Number of pending inbound messages."""
         return self.inbound.qsize()
-    
+
     @property
     def outbound_size(self) -> int:
         """Number of pending outbound messages."""

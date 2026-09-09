@@ -6,11 +6,8 @@ import json
 import time
 from pathlib import Path
 
-import pytest
-
 from analyst_runtime.cron.service import CronService, _compute_next_run
-from analyst_runtime.cron.types import CronJob, CronPayload, CronSchedule, CronJobState
-
+from analyst_runtime.cron.types import CronJob, CronSchedule
 
 # ---------------------------------------------------------------------------
 # Helpers

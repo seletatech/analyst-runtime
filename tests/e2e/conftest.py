@@ -20,7 +20,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-import httpx
 import pytest
 
 
@@ -229,13 +228,13 @@ class StagingSandbox:
             f"**Date:** {datetime.datetime.now().isoformat(timespec='seconds')}",
             f"**Session ID:** {session_id}",
             f"**Status:** {status}",
-            f"",
-            f"## Message",
-            f"```",
+            "",
+            "## Message",
+            "```",
             message,
-            f"```",
-            f"",
-            f"## Tool Calls (in order)",
+            "```",
+            "",
+            "## Tool Calls (in order)",
         ]
 
         if not path.exists():

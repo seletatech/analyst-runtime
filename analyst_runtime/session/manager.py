@@ -12,16 +12,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
+from analyst_runtime.utils.helpers import ensure_dir, safe_filename
+from analyst_runtime.utils.tool_calls import sanitize_openai_tool_calls, sanitize_tool_name
+
 # Event type for compressed conversation history summaries.
 # Written by AgentLoop._compress_history(); rendered as a synthetic context
 # message at the start of get_history() output so the LLM sees what happened
 # before the sliding window without loading the full raw event log.
 HISTORY_SUMMARY_TYPE = "history_summary"
-
-from loguru import logger
-
-from analyst_runtime.utils.helpers import ensure_dir, safe_filename
-from analyst_runtime.utils.tool_calls import sanitize_openai_tool_calls, sanitize_tool_name
 
 
 @dataclass

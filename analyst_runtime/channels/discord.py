@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -13,7 +12,6 @@ from analyst_runtime.bus.events import OutboundMessage
 from analyst_runtime.bus.queue import MessageBus
 from analyst_runtime.channels.base import BaseChannel
 from analyst_runtime.config.schema import DiscordConfig
-
 
 DISCORD_API_BASE = "https://discord.com/api/v10"
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024  # 20MB

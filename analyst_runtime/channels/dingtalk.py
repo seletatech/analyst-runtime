@@ -5,8 +5,8 @@ import json
 import time
 from typing import Any
 
-from loguru import logger
 import httpx
+from loguru import logger
 
 from analyst_runtime.bus.events import OutboundMessage
 from analyst_runtime.bus.queue import MessageBus
@@ -15,11 +15,11 @@ from analyst_runtime.config.schema import DingTalkConfig
 
 try:
     from dingtalk_stream import (
-        DingTalkStreamClient,
-        Credential,
+        AckMessage,
         CallbackHandler,
         CallbackMessage,
-        AckMessage,
+        Credential,
+        DingTalkStreamClient,
     )
     from dingtalk_stream.chatbot import ChatbotMessage
 

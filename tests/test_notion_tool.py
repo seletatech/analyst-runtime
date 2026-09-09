@@ -11,7 +11,6 @@ import pytest
 
 from analyst_runtime.agent.tools.notion import NotionTool
 
-
 _AUTHORIZED_TOKEN_PAYLOAD = {
     "status": "authorized",
     "service": "notion",
