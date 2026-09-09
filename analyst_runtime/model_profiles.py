@@ -27,16 +27,19 @@ _GLM_5_3_FLASH_ROUTES = {
     "zhipu": "glm-5.3-flash",
 }
 
+DEEPSEEK_V4_FLASH_PROFILE_ID = "deepseek-v4-flash-0731"
+_LEGACY_DEEPSEEK_PROFILE_IDS = {"deepseek-chat"}
+
 
 def resolve_model_profile(profile_id: str) -> ModelProfile:
     """Resolve a trusted gateway profile without accepting raw model IDs."""
-    if profile_id == "deepseek-chat":
-        provider = os.environ.get("DEEPSEEK_V4_FLASH_PROVIDER", "deepseek").strip().lower()
+    if profile_id == DEEPSEEK_V4_FLASH_PROFILE_ID or profile_id in _LEGACY_DEEPSEEK_PROFILE_IDS:
+        provider = os.environ.get("DEEPSEEK_V4_FLASH_PROVIDER", "nebius").strip().lower()
         try:
             model = _DEEPSEEK_V4_FLASH_ROUTES[provider]
         except KeyError as error:
             raise ValueError(f"Unsupported DeepSeek-V4-Flash provider: {provider!r}") from error
-        return ModelProfile(id=profile_id, provider=provider, model=model)
+        return ModelProfile(id=DEEPSEEK_V4_FLASH_PROFILE_ID, provider=provider, model=model)
     if profile_id == "glm-5.3-flash":
         provider = os.environ.get("GLM_5_3_FLASH_PROVIDER", "openrouter").strip().lower()
         try:
