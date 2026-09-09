@@ -35,7 +35,10 @@ def test_provider_catalog_drives_runtime_provider_capabilities() -> None:
         "tokenhub",
         "zhipu",
     }
-    assert {profile.id for profile in MODEL_PROFILES} == {"deepseek-chat", "glm-5.3-flash"}
+    assert {profile.id for profile in MODEL_PROFILES} == {
+        "deepseek-v4-flash-0731",
+        "glm-5.3-flash",
+    }
     assert {
         provider
         for profile in MODEL_PROFILES
@@ -128,13 +131,25 @@ def test_glm_profile_can_preserve_the_existing_openrouter_route(monkeypatch) -> 
     assert profile.model == "openrouter/z-ai/glm-5.3-flash"
 
 
-def test_glm_profile_defaults_to_the_existing_openrouter_route(monkeypatch) -> None:
+def test_glm_profile_can_route_to_nebius_without_changing_product_model_id(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("GLM_5_3_FLASH_PROVIDER", "nebius")
+
+    profile = resolve_model_profile("glm-5.3-flash")
+
+    assert profile.id == "glm-5.3-flash"
+    assert profile.provider == "nebius"
+    assert profile.model == "zai-org/GLM-5.3-Flash"
+
+
+def test_glm_profile_defaults_to_nebius(monkeypatch) -> None:
     monkeypatch.delenv("GLM_5_3_FLASH_PROVIDER", raising=False)
 
     profile = resolve_model_profile("glm-5.3-flash")
 
-    assert profile.provider == "openrouter"
-    assert profile.model == "openrouter/z-ai/glm-5.3-flash"
+    assert profile.provider == "nebius"
+    assert profile.model == "zai-org/GLM-5.3-Flash"
 
 
 def test_glm_profile_rejects_unknown_provider(monkeypatch) -> None:
@@ -149,9 +164,9 @@ def test_deepseek_profile_can_route_to_nvidia_without_changing_product_model_id(
 ) -> None:
     monkeypatch.setenv("DEEPSEEK_V4_FLASH_PROVIDER", "nvidia")
 
-    profile = resolve_model_profile("deepseek-chat")
+    profile = resolve_model_profile("deepseek-v4-flash-0731")
 
-    assert profile.id == "deepseek-chat"
+    assert profile.id == "deepseek-v4-flash-0731"
     assert profile.provider == "nvidia"
     assert profile.model == "deepseek-ai/deepseek-v4-flash-0731"
 
@@ -168,9 +183,19 @@ def test_deepseek_profile_can_route_to_nebius_without_changing_product_model_id(
 ) -> None:
     monkeypatch.setenv("DEEPSEEK_V4_FLASH_PROVIDER", "nebius")
 
+    profile = resolve_model_profile("deepseek-v4-flash-0731")
+
+    assert profile.id == "deepseek-v4-flash-0731"
+    assert profile.provider == "nebius"
+    assert profile.model == "deepseek-ai/DeepSeek-V4-Flash-0731"
+
+
+def test_deepseek_profile_defaults_to_nebius_and_normalizes_legacy_id(monkeypatch) -> None:
+    monkeypatch.delenv("DEEPSEEK_V4_FLASH_PROVIDER", raising=False)
+
     profile = resolve_model_profile("deepseek-chat")
 
-    assert profile.id == "deepseek-chat"
+    assert profile.id == "deepseek-v4-flash-0731"
     assert profile.provider == "nebius"
     assert profile.model == "deepseek-ai/DeepSeek-V4-Flash-0731"
 

@@ -105,6 +105,7 @@ class ModelProfileSpec:
     provider_env: str
     default_provider: str
     routes: tuple[tuple[str, str], ...]
+    aliases: tuple[str, ...] = ()
 
     def resolve(self) -> ModelProfile:
         provider = os.environ.get(self.provider_env, self.default_provider).strip().lower()
@@ -117,22 +118,24 @@ class ModelProfileSpec:
 
 MODEL_PROFILES: tuple[ModelProfileSpec, ...] = (
     ModelProfileSpec(
-        id="deepseek-chat",
+        id="deepseek-v4-flash-0731",
         label="DeepSeek-V4-Flash",
         provider_env="DEEPSEEK_V4_FLASH_PROVIDER",
-        default_provider="deepseek",
+        default_provider="nebius",
         routes=(
             ("deepseek", "deepseek-v4-flash"),
             ("nebius", "deepseek-ai/DeepSeek-V4-Flash-0731"),
             ("nvidia", "deepseek-ai/deepseek-v4-flash-0731"),
         ),
+        aliases=("deepseek-chat",),
     ),
     ModelProfileSpec(
         id="glm-5.3-flash",
         label="GLM-5.3-Flash",
         provider_env="GLM_5_3_FLASH_PROVIDER",
-        default_provider="openrouter",
+        default_provider="nebius",
         routes=(
+            ("nebius", "zai-org/GLM-5.3-Flash"),
             ("openrouter", "openrouter/z-ai/glm-5.3-flash"),
             ("tokenhub", "tokenhub/glm-5.3-flash"),
             ("zhipu", "glm-5.3-flash"),
@@ -144,7 +147,7 @@ MODEL_PROFILES: tuple[ModelProfileSpec, ...] = (
 def resolve_model_profile(profile_id: str) -> ModelProfile:
     """Resolve a trusted profile exclusively from the Runtime provider catalog."""
     for profile in MODEL_PROFILES:
-        if profile.id == profile_id:
+        if profile.id == profile_id or profile_id in profile.aliases:
             return profile.resolve()
     raise ValueError(f"Unsupported Analyst Runtime model profile: {profile_id!r}")
 
@@ -411,7 +414,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         keywords=("deepseek",),
         env_key="DEEPSEEK_API_KEY",
         display_name="DeepSeek",
-        litellm_prefix="deepseek",  # deepseek-chat → deepseek/deepseek-chat
+        litellm_prefix="deepseek",  # deepseek-v4-flash → deepseek/deepseek-v4-flash
         skip_prefixes=("deepseek/",),  # avoid double-prefix
         env_extras=(),
         is_gateway=False,
@@ -420,7 +423,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         detect_by_base_keyword="",
         default_api_base="https://api.deepseek.com",
         api_base_env=("DEEPSEEK_BASE_URL",),
-        sandbox_default_model="deepseek-chat",
+        sandbox_default_model="deepseek-v4-flash",
         runtime_model_prefix="deepseek/",
         accepts_request_credentials=True,
         strip_model_prefix=False,

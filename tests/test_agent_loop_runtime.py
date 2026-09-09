@@ -125,7 +125,7 @@ async def test_trusted_run_model_and_byok_are_request_scoped_and_never_echoed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("DEEPSEEK_V4_FLASH_PROVIDER", raising=False)
+    monkeypatch.setenv("DEEPSEEK_V4_FLASH_PROVIDER", "deepseek")
     (tmp_path / "workspace.json").write_text(
         json.dumps(
             {
@@ -153,7 +153,7 @@ async def test_trusted_run_model_and_byok_are_request_scoped_and_never_echoed(
                 "provider": "deepseek",
                 "source": "byok",
             },
-            "model_profile_id": "deepseek-chat",
+            "model_profile_id": "deepseek-v4-flash-0731",
             "project_id": "linghui-ai-suite",
             "runtime": "linghui-dashboard-agent",
         },
@@ -559,7 +559,7 @@ async def test_runtime_owns_profile_resolution_and_rejects_mismatched_byok(
                 "provider": "zhipu",
                 "source": "byok",
             },
-            "model_profile_id": "deepseek-chat",
+            "model_profile_id": "deepseek-v4-flash-0731",
             "project_id": "linghui-ai-suite",
             "runtime": "linghui-dashboard-agent",
         },
