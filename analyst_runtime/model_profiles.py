@@ -22,6 +22,7 @@ _DEEPSEEK_V4_FLASH_ROUTES = {
 }
 
 _GLM_5_3_FLASH_ROUTES = {
+    "nebius": "zai-org/GLM-5.3-Flash",
     "openrouter": "openrouter/z-ai/glm-5.3-flash",
     "tokenhub": "tokenhub/glm-5.3-flash",
     "zhipu": "glm-5.3-flash",
@@ -41,7 +42,7 @@ def resolve_model_profile(profile_id: str) -> ModelProfile:
             raise ValueError(f"Unsupported DeepSeek-V4-Flash provider: {provider!r}") from error
         return ModelProfile(id=DEEPSEEK_V4_FLASH_PROFILE_ID, provider=provider, model=model)
     if profile_id == "glm-5.3-flash":
-        provider = os.environ.get("GLM_5_3_FLASH_PROVIDER", "openrouter").strip().lower()
+        provider = os.environ.get("GLM_5_3_FLASH_PROVIDER", "nebius").strip().lower()
         try:
             model = _GLM_5_3_FLASH_ROUTES[provider]
         except KeyError as error:

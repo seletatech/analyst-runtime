@@ -120,13 +120,25 @@ def test_glm_profile_can_preserve_the_existing_openrouter_route(monkeypatch) -> 
     assert profile.model == "openrouter/z-ai/glm-5.3-flash"
 
 
-def test_glm_profile_defaults_to_the_existing_openrouter_route(monkeypatch) -> None:
+def test_glm_profile_can_route_to_nebius_without_changing_product_model_id(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("GLM_5_3_FLASH_PROVIDER", "nebius")
+
+    profile = resolve_model_profile("glm-5.3-flash")
+
+    assert profile.id == "glm-5.3-flash"
+    assert profile.provider == "nebius"
+    assert profile.model == "zai-org/GLM-5.3-Flash"
+
+
+def test_glm_profile_defaults_to_nebius(monkeypatch) -> None:
     monkeypatch.delenv("GLM_5_3_FLASH_PROVIDER", raising=False)
 
     profile = resolve_model_profile("glm-5.3-flash")
 
-    assert profile.provider == "openrouter"
-    assert profile.model == "openrouter/z-ai/glm-5.3-flash"
+    assert profile.provider == "nebius"
+    assert profile.model == "zai-org/GLM-5.3-Flash"
 
 
 def test_glm_profile_rejects_unknown_provider(monkeypatch) -> None:
