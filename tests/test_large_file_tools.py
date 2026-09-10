@@ -59,6 +59,17 @@ async def test_append_file_tool_creates_and_appends_chunks(tmp_path: Path) -> No
     assert path.read_text(encoding="utf-8") == "<html>Hello</html>"
 
 
+async def test_file_tools_resolve_relative_paths_from_allowed_directory(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    tool = WriteFileTool(allowed_dir=workspace)
+
+    result = await tool.execute(path="artifacts/report.csv", content="ok")
+
+    assert result.startswith("Successfully wrote")
+    assert (workspace / "artifacts" / "report.csv").read_text(encoding="utf-8") == "ok"
+
+
 async def test_patch_file_tool_repairs_selected_sections(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()

@@ -106,7 +106,11 @@ class ExecTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Execute a shell command and return its output. Use with caution."
+        return (
+            "Execute a shell command and return its output. Use relative workspace paths; "
+            "quote paths containing spaces or parentheses; for an expected empty grep result "
+            "use `|| true`, and do not pipe Python errors away."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -304,6 +308,8 @@ class ExecTool(Tool):
                 try:
                     p = Path(raw.strip()).resolve()
                 except Exception:
+                    continue
+                if p == Path(os.devnull).resolve():
                     continue
                 if (
                     p.is_absolute()

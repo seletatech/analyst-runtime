@@ -16,7 +16,10 @@ def _resolve_path(
     allowed_dirs: list[Path] | None = None,
 ) -> Path:
     """Resolve path and optionally enforce directory restriction."""
-    resolved = Path(path).expanduser().resolve()
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute() and allowed_dir is not None:
+        candidate = allowed_dir / candidate
+    resolved = candidate.resolve()
     roots = [root.resolve() for root in (allowed_dirs or []) if root is not None]
     if allowed_dir is not None:
         roots.append(allowed_dir.resolve())

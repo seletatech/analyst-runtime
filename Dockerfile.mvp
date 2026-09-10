@@ -4,6 +4,8 @@ ARG ANALYST_RUNTIME_BASE_IMAGE=ghcr.io/astral-sh/uv:python3.12-alpine@sha256:e21
 FROM ${ANALYST_RUNTIME_BASE_IMAGE}
 
 ARG ANALYST_RUNTIME_VERSION=dev
+ARG TARGETARCH
+ARG EXCEL_MCP_VERSION=1.1.2
 # 1 = release wheelhouse (offline, default); online = locked registry install for
 # local development; 0 = dependencies are already present in the base image.
 ARG ANALYST_RUNTIME_INSTALL_DEPENDENCIES=1
@@ -12,6 +14,21 @@ ARG ANALYST_RUNTIME_INSTALL_DEPENDENCIES=1
 # automation, Google Workspace and media tools are deliberately excluded from
 # this image to reduce build time and production attack surface.
 WORKDIR /app
+
+# Read-only XLSX inspection is exposed through exec and a workspace skill, not MCP.
+# Pin both release version and checksum so the production image is reproducible.
+RUN case "${TARGETARCH}" in \
+      amd64) EXCEL_MCP_SHA256=830140992cc5764aed440e161c65e9e2048df5eb5c97a9b63f58d5a9efbba2a0 ;; \
+      arm64) EXCEL_MCP_SHA256=7b02bf29148fe2bb1573f7db24ba71e264c2ac18cb998de8840c57cc8550902f ;; \
+      *) echo "unsupported TARGETARCH: ${TARGETARCH}"; exit 1 ;; \
+    esac \
+    && wget -q \
+      "https://github.com/ralscha/excel-mcp/releases/download/v${EXCEL_MCP_VERSION}/excel-mcp_${EXCEL_MCP_VERSION}_linux_${TARGETARCH}.tar.gz" \
+      -O /tmp/excel-mcp.tar.gz \
+    && echo "${EXCEL_MCP_SHA256}  /tmp/excel-mcp.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/excel-mcp.tar.gz -C /usr/local/bin excel-mcp \
+    && chmod 0755 /usr/local/bin/excel-mcp \
+    && rm /tmp/excel-mcp.tar.gz
 
 COPY analyst-runtime/pyproject.toml analyst-runtime/uv.lock analyst-runtime/README.md analyst-runtime/LICENSE ./
 COPY analyst-runtime/vendor/ /opt/analyst-runtime-wheels/
@@ -71,6 +88,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV WORKSPACE_PATH=/app/workspace
 ENV SANDBOX_ID=default
 ENV ANALYST_RUNTIME_VERSION=${ANALYST_RUNTIME_VERSION}
+ENV EXCEL_FILES_PATH=/workspace
 
 ENTRYPOINT ["python", "-m", "analyst_runtime"]
 CMD ["sandbox"]

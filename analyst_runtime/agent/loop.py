@@ -16,6 +16,7 @@ from loguru import logger
 
 from analyst_runtime.agent.analysis_context import AnalysisArtifactError, AnalysisArtifactStore
 from analyst_runtime.agent.context import ContextBuilder
+from analyst_runtime.agent.memory import ProtectedMemorySection
 from analyst_runtime.agent.subagent import SubagentManager
 from analyst_runtime.agent.tool_profiles import register_workspace_analysis_tools
 from analyst_runtime.agent.tools.analyze_image_tool import AnalyzeImageTool
@@ -44,6 +45,14 @@ _MONTHLY_ARTIFACT_ID_RE = re.compile(
     r"\d{4}-(?:0[1-9]|1[0-2]):[0-9a-f]{12}"
 )
 _PQC_ANALYSIS_ID_RE = re.compile(r"pqc-defect-loss:[0-9a-f]{64}")
+_CONFIRMED_SEMANTICS_MEMORY = ProtectedMemorySection(
+    name="confirmed_manufacturing_semantics",
+    start_marker="<!-- confirmed-manufacturing-semantics:start -->",
+    end_marker="<!-- confirmed-manufacturing-semantics:end -->",
+)
+_EXPLICIT_SEMANTICS_CONFIRMATION_RE = re.compile(
+    r"\s*确认(?:并)?按上述口径分析[。.!！]?\s*"
+)
 
 ProgressTool = dict[str, str]
 ProgressCallback = Callable[[str | None, ProgressTool | str | None], Awaitable[None]]
@@ -120,6 +129,27 @@ class AgentLoop:
         ).encode()
         return hashlib.sha256(encoded).hexdigest()
 
+    @classmethod
+    def _message_context_manifest(cls, messages: list[dict[str, Any]]) -> dict[str, Any]:
+        items = []
+        for message in messages:
+            value = message.get("content")
+            encoded = json.dumps(message, ensure_ascii=False, sort_keys=True, default=str)
+            item = {
+                "role": str(message.get("role") or ""),
+                "sha256": cls._content_sha256(message),
+                "content_sha256": cls._content_sha256(value),
+                "chars": len(encoded),
+            }
+            if message.get("tool_calls"):
+                item["tool_call_count"] = len(message["tool_calls"])
+            items.append(item)
+        return {
+            "message_count": len(messages),
+            "roles": [item["role"] for item in items],
+            "messages": items,
+        }
+
     @staticmethod
     def _explicit_analysis_reuse(content: str) -> bool:
         """Recognize an explicit request to keep using the prior result unchanged."""
@@ -153,12 +183,30 @@ class AgentLoop:
                 hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "unavailable"
             )
 
+        def data_release_hash() -> str:
+            data_root = self.workspace / "data"
+            manifest = data_root / "manifest.json"
+            if not manifest.is_file():
+                return "unavailable"
+            try:
+                digest = hashlib.sha256(manifest.read_bytes())
+                # ponytail: metadata fingerprint avoids re-reading 3 GB per turn; replace it
+                # with a generated digest manifest if timestamp-preserving imports exist.
+                for path in sorted(item for item in data_root.rglob("*") if item.is_file()):
+                    stat = path.stat()
+                    digest.update(
+                        f"{path.relative_to(data_root)}\0{stat.st_size}\0{stat.st_mtime_ns}\n".encode()
+                    )
+                return digest.hexdigest()
+            except OSError:
+                return "unavailable"
+
         return {
             "product_commit": os.environ.get("ANALYST_RUNTIME_VERSION", "unavailable"),
             "image_digest": os.environ.get("ANALYST_RUNTIME_IMAGE_DIGEST", "unavailable"),
             "tool_profile": self.tool_profile,
             "agents_md_sha256": file_hash("AGENTS.md"),
-            "workspace_data_manifest_sha256": file_hash("data/manifest.json"),
+            "workspace_data_manifest_sha256": data_release_hash(),
         }
 
     @classmethod
@@ -186,6 +234,7 @@ class AgentLoop:
                         "prompt_chars": len(str(event.get("content") or "")),
                         "tools_sha256": cls._content_sha256(tools),
                         "tool_count": len(tools),
+                        "context": event.get("context") or {},
                     }
                 )
             elif event_type == "model_call":
@@ -205,6 +254,7 @@ class AgentLoop:
                         "finish_reason": event.get("finish_reason"),
                         "usage": event.get("usage") or {},
                         "tool_names": names,
+                        "context": event.get("context") or {},
                     }
                 )
             elif event_type == "tool_result":
@@ -215,7 +265,7 @@ class AgentLoop:
                         "tool_name": event.get("tool_name"),
                         "input_sha256": cls._content_sha256(event.get("tool_input")),
                         "output_sha256": cls._content_sha256(event.get("content")),
-                        "status": "completed",
+                        "status": event.get("status") or "completed",
                     }
                 )
             elif event_type == "analysis_context":
@@ -300,7 +350,15 @@ class AgentLoop:
         self.tool_profile = tool_profile
         self.workspace_configuration = WorkspaceConfiguration.load(workspace)
         self.channel_manager = None  # set post-construction by the caller
-        self.context = ContextBuilder(workspace, tool_profile=tool_profile)
+        self.context = ContextBuilder(
+            workspace,
+            protected_memory_sections=(
+                (_CONFIRMED_SEMANTICS_MEMORY,)
+                if tool_profile == "trusted-analysis"
+                else ()
+            ),
+            tool_profile=tool_profile,
+        )
         self.sessions = session_manager or SessionManager(workspace)
         self.analysis_artifacts = AnalysisArtifactStore(workspace)
         self.tools = ToolRegistry()
@@ -345,6 +403,101 @@ class AgentLoop:
         self._pending_cancellations: set[str] = set()
         self.bus.add_inbound_listener(self._handle_inbound_control)
         self._register_default_tools()
+
+    def _remember_confirmed_semantics(
+        self,
+        user_message: str,
+        history: list[dict[str, Any]],
+    ) -> str | None:
+        if self.tool_profile != "trusted-analysis" or not _EXPLICIT_SEMANTICS_CONFIRMATION_RE.fullmatch(
+            user_message
+        ):
+            return None
+        proposal_index = next(
+            (
+                index
+                for index in range(len(history) - 1, -1, -1)
+                if history[index].get("role") == "assistant"
+                and "待确认的定义与口径"
+                in str(history[index].get("content") or "")
+            ),
+            None,
+        )
+        if proposal_index is None:
+            return None
+        proposal = str(history[proposal_index].get("content") or "").strip()
+        question = next(
+            (
+                str(message.get("content") or "").strip()
+                for message in reversed(history[:proposal_index])
+                if message.get("role") == "user"
+            ),
+            "",
+        )
+        if not question:
+            return None
+
+        digest = hashlib.sha256(proposal.encode()).hexdigest()[:12]
+        content = (
+            f"<!-- confirmed-query:{self._semantic_query_hash(question)} -->\n"
+            f"**适用问题**：{question}\n\n{proposal}"
+        )
+        current = self.context.memory.read_protected_section(
+            _CONFIRMED_SEMANTICS_MEMORY
+        )
+        entries = re.findall(
+            r"(?ms)^### ([0-9a-f]{12})\n(.*?)(?=^### |\Z)", current
+        )
+        entries = [(digest, content)] + [
+            (entry_id, content.strip())
+            for entry_id, content in entries
+            if entry_id != digest
+        ][:4]
+        rendered = "\n\n".join(
+            f"### {entry_id}\n{content}" for entry_id, content in entries
+        )
+        self.context.memory.replace_protected_section(
+            _CONFIRMED_SEMANTICS_MEMORY,
+            f"{_CONFIRMED_SEMANTICS_MEMORY.start_marker}\n"
+            "## 已确认的制造语义\n\n"
+            "按最近确认优先；只在业务对象和全部口径一致时复用。\n\n"
+            f"{rendered}\n"
+            f"{_CONFIRMED_SEMANTICS_MEMORY.end_marker}",
+        )
+        return question
+
+    @staticmethod
+    def _semantic_query_hash(value: str) -> str:
+        return AnalysisArtifactStore.question_hash(value)[:16]
+
+    @staticmethod
+    def _legacy_semantic_query_hash(value: str) -> str:
+        normalized = re.sub(r"[\W_]+", "", value.casefold())
+        return hashlib.sha256(normalized.encode()).hexdigest()[:16]
+
+    def _confirmed_semantics_reuse_instruction(self, user_message: str) -> str | None:
+        if self._confirmed_semantics_sha256(user_message) is None:
+            return None
+        return (
+            "当前问题与长期记忆中一条已确认制造语义的适用问题完全匹配。"
+            "必须直接复用对应口径并开始分析，不得再次要求用户确认；"
+            "最终回答仍需写明本次采用的已确认口径。"
+        )
+
+    def _confirmed_semantics_sha256(self, user_message: str) -> str | None:
+        if self.tool_profile != "trusted-analysis":
+            return None
+        memory = self.context.memory.read_protected_section(_CONFIRMED_SEMANTICS_MEMORY)
+        markers = (
+            f"<!-- confirmed-query:{self._semantic_query_hash(user_message)} -->",
+            f"<!-- confirmed-query:{self._legacy_semantic_query_hash(user_message)} -->",
+        )
+        for _, content in re.findall(
+            r"(?ms)^### ([0-9a-f]{12})\n(.*?)(?=^### |\Z)", memory
+        ):
+            if any(marker in content for marker in markers):
+                return hashlib.sha256(content.strip().encode()).hexdigest()
+        return None
 
     async def _handle_inbound_control(self, msg: InboundMessage) -> None:
         if msg.metadata.get("control") != "cancel":
@@ -675,6 +828,8 @@ class AgentLoop:
         normalized = result.strip()
         if re.search(r"(?i)^\s*(?:error|failed|failure)\b", normalized):
             return False
+        if "Traceback (most recent call last):" in normalized:
+            return False
         if re.search(r"(?im)^\s*exit code:\s*[1-9]\d*\s*$", normalized):
             return False
         try:
@@ -798,6 +953,9 @@ class AgentLoop:
         session: Session,
         *,
         parent_uuid: str,
+        question: str | None = None,
+        data_manifest_sha256: str | None = None,
+        confirmed_semantics_sha256: str | None = None,
     ) -> tuple[str | None, bool]:
         analysis_id = session.metadata.get("active_analysis_id")
         if not isinstance(analysis_id, str):
@@ -812,6 +970,18 @@ class AgentLoop:
                 "Explain that the analysis must be run again before quoting a result.",
                 False,
             )
+        if payload.get("schema_version") == "analyst-runtime-answer/v1" and (
+            question is None
+            or data_manifest_sha256 is None
+            or confirmed_semantics_sha256 is None
+            or not self.analysis_artifacts.matches_completed_answer(
+                analysis_id,
+                question=question,
+                data_manifest_sha256=data_manifest_sha256,
+                confirmed_semantics_sha256=confirmed_semantics_sha256,
+            )
+        ):
+            return None, False
 
         session.add_event(
             {
@@ -1090,10 +1260,11 @@ class AgentLoop:
 
         while iteration < self.max_iterations:
             iteration += 1
+            available_tools = self.tools.get_definitions() if allow_tools else []
 
             response = await self.provider.chat(
                 messages=messages,
-                tools=self.tools.get_definitions() if allow_tools else [],
+                tools=available_tools,
                 model=active_model,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
@@ -1109,6 +1280,11 @@ class AgentLoop:
                         "finish_reason": response.finish_reason,
                         "usage": response.usage,
                         "provider_retry_count": response.retry_count,
+                        "context": {
+                            **self._message_context_manifest(messages),
+                            "available_tools_sha256": self._content_sha256(available_tools),
+                            "available_tool_count": len(available_tools),
+                        },
                         "tool_calls": [
                             {
                                 "function": {"name": sanitize_tool_name(tool_call.name)},
@@ -1139,10 +1315,8 @@ class AgentLoop:
 
             if response.has_tool_calls:
                 if on_progress:
-                    # Expose the agent-loop phase without leaking the provider's private
-                    # reasoning_content. Provider-authored public summaries, when present
-                    # in content, are emitted as the next progress item.
-                    await on_progress("Reason", None)
+                    # Expose provider-authored public summaries without leaking private
+                    # reasoning_content.
                     clean = self._strip_think(response.content)
                     if clean:
                         await on_progress(clean, None)
@@ -1242,10 +1416,10 @@ class AgentLoop:
                         args_str[:80],
                         result[:200] if isinstance(result, str) else str(result)[:200],
                     )
+                    terminal_status = (
+                        "completed" if self._tool_call_succeeded(result) else "failed"
+                    )
                     if on_progress:
-                        terminal_status = (
-                            "completed" if self._tool_call_succeeded(result) else "failed"
-                        )
                         await on_progress(
                             None,
                             self._tool_progress(tool_call, terminal_status, result),
@@ -1290,6 +1464,7 @@ class AgentLoop:
                                 "tool_name": sanitized_name,
                                 "tool_input": tool_call.arguments,
                                 "content": ref_content,
+                                "status": terminal_status,
                             }
                         )
                         parent_uuid = tr_uuid
@@ -2098,6 +2273,7 @@ class AgentLoop:
             events_to_archive = session.events.copy()
             session.clear()
             session.metadata.pop("active_analysis_id", None)
+            session.metadata.pop("answer_artifacts", None)
             self.sessions.save(session)
             self.sessions.invalidate(session.key)
 
@@ -2256,7 +2432,19 @@ class AgentLoop:
         # build_messages appends current_message separately — including the
         # just-added user_input in the history snapshot would send the message
         # twice to the LLM.
-        history_snapshot = session.get_history(max_messages=self.memory_window)
+        history_context: dict[str, Any] = {}
+        history_snapshot = session.get_history(
+            max_messages=self.memory_window,
+            context=history_context,
+        )
+        runtime_provenance = self._runtime_provenance()
+        confirmed_question = None
+        if self._is_trusted_gateway(msg):
+            confirmed_question = self._remember_confirmed_semantics(msg.content, history_snapshot)
+        analysis_question = confirmed_question or msg.content
+        confirmed_semantics_sha256 = (
+            self._confirmed_semantics_sha256(analysis_question) or "unavailable"
+        )
 
         # Emit user_input event. The index scopes exported trace telemetry to this turn.
         turn_event_start = len(session.events)
@@ -2272,11 +2460,30 @@ class AgentLoop:
             }
         )
 
+        answer_key = self.analysis_artifacts.completed_answer_key(
+            analysis_question,
+            runtime_provenance["workspace_data_manifest_sha256"],
+            confirmed_semantics_sha256,
+        )
+        answer_artifacts = session.metadata.get("answer_artifacts")
+        if isinstance(answer_artifacts, dict) and isinstance(answer_artifacts.get(answer_key), str):
+            session.metadata["active_analysis_id"] = answer_artifacts[answer_key]
         analysis_instruction, active_analysis_available = self._reuse_analysis_context(
             session,
             parent_uuid=request_uuid,
+            question=analysis_question,
+            data_manifest_sha256=runtime_provenance["workspace_data_manifest_sha256"],
+            confirmed_semantics_sha256=confirmed_semantics_sha256,
         )
-        reuse_requested = active_analysis_available and self._explicit_analysis_reuse(msg.content)
+        active_analysis_id = session.metadata.get("active_analysis_id")
+        exact_artifact_reuse = bool(
+            active_analysis_available
+            and isinstance(active_analysis_id, str)
+            and active_analysis_id.startswith("chat-answer:")
+        )
+        reuse_requested = active_analysis_available and (
+            exact_artifact_reuse or self._explicit_analysis_reuse(msg.content)
+        )
         followup_analysis = reuse_requested and self._explicit_followup_analysis(msg.content)
         interpretation_only = reuse_requested and not followup_analysis
 
@@ -2287,6 +2494,10 @@ class AgentLoop:
             media=msg.media if msg.media else None,
             channel=msg.channel,
             chat_id=msg.chat_id,
+        )
+        self._append_system_instruction(
+            initial_messages,
+            self._confirmed_semantics_reuse_instruction(msg.content),
         )
         self._append_system_instruction(initial_messages, bootstrap_instruction)
         self._append_system_instruction(initial_messages, analysis_instruction)
@@ -2328,6 +2539,10 @@ class AgentLoop:
                 "type": "prompt_snapshot",
                 "content": system_content,
                 "tools": self.tools.get_definitions() if not interpretation_only else [],
+                "context": {
+                    "history": history_context,
+                    "input": self._message_context_manifest(initial_messages),
+                },
             }
         )
 
@@ -2472,6 +2687,55 @@ class AgentLoop:
             preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
             logger.info(f"Response to {msg.channel}:{msg.sender_id}: {preview}")
 
+        turn_events = session.events[turn_event_start:]
+        tool_events = [event for event in turn_events if event.get("type") == "tool_result"]
+        current_analysis_id = session.metadata.get("active_analysis_id")
+        if (
+            not terminal_error_code
+            and self._is_trusted_gateway(msg)
+            and tools_used
+            and tool_events
+            and all(event.get("status") == "completed" for event in tool_events)
+            and self._confirmed_semantics_reuse_instruction(analysis_question)
+            and runtime_provenance["workspace_data_manifest_sha256"] != "unavailable"
+            and (
+                current_analysis_id is None
+                or str(current_analysis_id).startswith("chat-answer:")
+            )
+        ):
+            analysis_id = self.analysis_artifacts.save_completed_answer(
+                question=analysis_question,
+                answer=final_content,
+                data_manifest_sha256=runtime_provenance[
+                    "workspace_data_manifest_sha256"
+                ],
+                confirmed_semantics_sha256=confirmed_semantics_sha256,
+                tools_used=tools_used,
+                evidence=[
+                    {
+                        "tool_name": event.get("tool_name"),
+                        "input_sha256": self._content_sha256(event.get("tool_input")),
+                        "output_sha256": self._content_sha256(event.get("content")),
+                    }
+                    for event in tool_events
+                ],
+            )
+            session.metadata["active_analysis_id"] = analysis_id
+            answer_artifacts = session.metadata.get("answer_artifacts")
+            if not isinstance(answer_artifacts, dict):
+                answer_artifacts = {}
+                session.metadata["answer_artifacts"] = answer_artifacts
+            answer_artifacts[answer_key] = analysis_id
+            session.add_event(
+                {
+                    "uuid": str(uuid.uuid4()),
+                    "parent_uuid": request_uuid,
+                    "type": "analysis_context",
+                    "mode": "created",
+                    "analysis_id": analysis_id,
+                }
+            )
+
         if (
             session.metadata.get(_AWAITING_COMPOSIO_API_KEY)
             and self._composio_credentials_path().exists()
@@ -2499,7 +2763,7 @@ class AgentLoop:
         }
         outbound_metadata["model"] = active_model
         outbound_metadata["runtime_provenance"] = {
-            **self._runtime_provenance(),
+            **runtime_provenance,
             "model_provider": trusted_profile.provider if trusted_profile else "unavailable",
         }
         outbound_metadata["trace_summary"] = self._trace_summary(session.events[turn_event_start:])

@@ -84,6 +84,8 @@ def test_linghui_prompt_requires_semantic_confirmation_before_analysis() -> None
     assert "确认并按上述口径分析" in prompt
     assert "确认前不得读取业务数据、执行计算或给出分析数值" in prompt
     assert "在同一段正常对话中继续分析" in prompt
+    assert "相同业务对象和口径" in prompt
+    assert "无需再次确认" in prompt
     assert "propose_manufacturing_semantics" not in prompt
     assert "confirm_manufacturing_semantics" not in prompt
     assert "后台分析任务" not in prompt
@@ -93,10 +95,10 @@ def test_linghui_prompt_requires_semantic_confirmation_before_analysis() -> None
     assert "70538" not in (WORKSPACE / "AGENTS.md").read_text(encoding="utf-8")
 
 
-def test_every_analysis_prompt_requires_user_visible_business_semantics_confirmation() -> None:
+def test_new_or_changed_analysis_semantics_require_user_confirmation() -> None:
     prompt = ContextBuilder(WORKSPACE, minimal=True).build_system_prompt()
 
-    assert "所有需要读取业务数据或产生分析结论的问题" in prompt
+    assert "没有明确匹配、存在冲突或本次口径有变化时" in prompt
     assert "产品范围" in prompt
     assert "时间范围" in prompt
     assert "期间归属" in prompt
