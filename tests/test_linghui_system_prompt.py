@@ -107,6 +107,34 @@ def test_new_or_changed_analysis_semantics_require_user_confirmation() -> None:
     assert "确认前不得读取 `data/`、业务附件或调用任何分析任务" in prompt
 
 
+def test_linghui_prompt_bounds_clarification_and_runs_precise_lookups_immediately() -> None:
+    prompt = ContextBuilder(WORKSPACE, minimal=True).build_system_prompt()
+
+    assert "精确记录查询直接检索" in prompt
+    assert "产品号或物料号不等于单条记录标识符" in prompt
+    assert "不要展示固定回复口令" in prompt
+    assert "仅在单记录精确查询或已完成语义确认后" in prompt
+    assert "最多两轮" in prompt
+    assert "只追问尚未确认且会显著改变结果" in prompt
+    assert "不得重复整张口径卡" in prompt
+    assert "采用建议默认值并开始分析" in prompt
+    assert "成本标为待补单价" in prompt
+
+
+def test_trusted_analysis_does_not_activate_generic_memory_writes() -> None:
+    prompt = ContextBuilder(
+        WORKSPACE,
+        minimal=False,
+        tool_profile="trusted-analysis",
+    ).build_system_prompt()
+
+    assert "Write important facts immediately" not in prompt
+    assert "Long-term facts" not in prompt
+    assert "聚合或多记录分析必须先完成语义确认" in (
+        WORKSPACE / "skills/xlsx/SKILL.md"
+    ).read_text(encoding="utf-8")
+
+
 def test_every_analysis_answer_leads_with_applied_definitions_and_scope() -> None:
     prompt = ContextBuilder(WORKSPACE, minimal=True).build_system_prompt()
 

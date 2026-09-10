@@ -53,6 +53,10 @@ _CONFIRMED_SEMANTICS_MEMORY = ProtectedMemorySection(
 _EXPLICIT_SEMANTICS_CONFIRMATION_RE = re.compile(
     r"\s*确认(?:并)?按上述口径分析[。.!！]?\s*"
 )
+_SELF_CONTAINED_SEMANTICS_CONFIRMATION_RE = re.compile(
+    r"\s*确认以下口径并分析\s*[：:]\s*\S.+\s*",
+    re.DOTALL,
+)
 
 ProgressTool = dict[str, str]
 ProgressCallback = Callable[[str | None, ProgressTool | str | None], Awaitable[None]]
@@ -409,8 +413,14 @@ class AgentLoop:
         user_message: str,
         history: list[dict[str, Any]],
     ) -> str | None:
-        if self.tool_profile != "trusted-analysis" or not _EXPLICIT_SEMANTICS_CONFIRMATION_RE.fullmatch(
-            user_message
+        confirms_previous_card = bool(
+            _EXPLICIT_SEMANTICS_CONFIRMATION_RE.fullmatch(user_message)
+        )
+        supplies_complete_card = bool(
+            _SELF_CONTAINED_SEMANTICS_CONFIRMATION_RE.fullmatch(user_message)
+        )
+        if self.tool_profile != "trusted-analysis" or not (
+            confirms_previous_card or supplies_complete_card
         ):
             return None
         proposal_index = next(
@@ -426,6 +436,7 @@ class AgentLoop:
         if proposal_index is None:
             return None
         proposal = str(history[proposal_index].get("content") or "").strip()
+        confirmed_semantics = user_message.strip() if supplies_complete_card else proposal
         question = next(
             (
                 str(message.get("content") or "").strip()
@@ -437,10 +448,10 @@ class AgentLoop:
         if not question:
             return None
 
-        digest = hashlib.sha256(proposal.encode()).hexdigest()[:12]
+        digest = hashlib.sha256(confirmed_semantics.encode()).hexdigest()[:12]
         content = (
             f"<!-- confirmed-query:{self._semantic_query_hash(question)} -->\n"
-            f"**适用问题**：{question}\n\n{proposal}"
+            f"**适用问题**：{question}\n\n{confirmed_semantics}"
         )
         current = self.context.memory.read_protected_section(
             _CONFIRMED_SEMANTICS_MEMORY
@@ -465,6 +476,42 @@ class AgentLoop:
             f"{_CONFIRMED_SEMANTICS_MEMORY.end_marker}",
         )
         return question
+
+    def _semantic_clarification_instruction(
+        self,
+        user_message: str,
+        history: list[dict[str, Any]],
+    ) -> str | None:
+        if self.tool_profile != "trusted-analysis" or (
+            _EXPLICIT_SEMANTICS_CONFIRMATION_RE.fullmatch(user_message)
+            or _SELF_CONTAINED_SEMANTICS_CONFIRMATION_RE.fullmatch(user_message)
+        ):
+            return None
+        proposal_index = next(
+            (
+                index
+                for index in range(len(history) - 1, -1, -1)
+                if history[index].get("role") == "assistant"
+                and "待确认的定义与口径"
+                in str(history[index].get("content") or "")
+            ),
+            None,
+        )
+        if proposal_index is None:
+            return None
+        clarification_round = 1 + sum(
+            message.get("role") == "user" for message in history[proposal_index + 1 :]
+        )
+        if clarification_round >= 2:
+            return (
+                "这是本次复杂分析的第二轮也是最后一轮语义澄清。整合用户已经提供的"
+                "答案，对仍缺失的非关键项采用建议默认值，必须开始调用分析工具并在本轮"
+                "交付结果；不得再生成确认卡或要求用户确认。"
+            )
+        return (
+            "这是第一轮语义澄清回复。先简短确认已知内容；如果仍有会显著改变结果的"
+            "缺口，只问最多两个剩余问题且不得重复整张口径卡。信息足够时立即开始分析。"
+        )
 
     @staticmethod
     def _semantic_query_hash(value: str) -> str:
@@ -2497,7 +2544,11 @@ class AgentLoop:
         )
         self._append_system_instruction(
             initial_messages,
-            self._confirmed_semantics_reuse_instruction(msg.content),
+            self._confirmed_semantics_reuse_instruction(analysis_question),
+        )
+        self._append_system_instruction(
+            initial_messages,
+            self._semantic_clarification_instruction(msg.content, history_snapshot),
         )
         self._append_system_instruction(initial_messages, bootstrap_instruction)
         self._append_system_instruction(initial_messages, analysis_instruction)
