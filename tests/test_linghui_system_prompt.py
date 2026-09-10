@@ -81,7 +81,7 @@ def test_linghui_prompt_requires_semantic_confirmation_before_analysis() -> None
     prompt = ContextBuilder(WORKSPACE, minimal=True).build_system_prompt()
 
     assert "待确认的定义与口径" in prompt
-    assert "确认并按上述口径分析" in prompt
+    assert "确认并按上述口径分析" not in prompt
     assert "确认前不得读取业务数据、执行计算或给出分析数值" in prompt
     assert "在同一段正常对话中继续分析" in prompt
     assert "相同业务对象和口径" in prompt

@@ -498,7 +498,12 @@ class AgentLoop:
             None,
         )
         if proposal_index is None:
-            return None
+            return (
+                "如果当前请求需要语义澄清，这是首次澄清：只生成“待确认的定义与口径”"
+                "并提出最多三个会显著改变结果的问题，每个编号只能包含一个问题；不要"
+                "展开完整口径表、不要要求固定回复措辞。若是单记录精确查询，则跳过澄清"
+                "并立即调用检索工具。"
+            )
         clarification_round = 1 + sum(
             message.get("role") == "user" for message in history[proposal_index + 1 :]
         )

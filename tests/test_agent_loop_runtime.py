@@ -268,6 +268,28 @@ def test_second_clarification_reply_forces_analysis_to_start(tmp_path: Path) -> 
     assert "不得再生成确认卡" in instruction
 
 
+def test_first_clarification_reply_is_bounded_without_fixed_reply_phrase(
+    tmp_path: Path,
+) -> None:
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=_SequenceProvider([]),
+        workspace=tmp_path,
+        tool_profile="trusted-analysis",
+    )
+
+    instruction = agent._semantic_clarification_instruction(
+        "从当前数据中找出良率最低的几个生产批次。",
+        [],
+    )
+
+    assert instruction is not None
+    assert "最多三个" in instruction
+    assert "每个编号只能包含一个问题" in instruction
+    assert "不要要求固定回复措辞" in instruction
+    assert "确认并按上述口径分析" not in instruction
+
+
 def test_non_confirmation_does_not_persist_semantics(tmp_path: Path) -> None:
     agent = AgentLoop(
         bus=MessageBus(),
