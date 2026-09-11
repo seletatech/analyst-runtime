@@ -88,6 +88,7 @@ def test_workspace_contains_only_minimal_prompt_and_business_data() -> None:
     assert tracked == {
         "workspace/.gitignore",
         "workspace/AGENTS.md",
+        "workspace/README.md",
         "workspace/SOUL.md",
         "workspace/bin/analyze_pqc_defect_loss.py",
         "workspace/skills/xlsx/capture_evidence.py",
