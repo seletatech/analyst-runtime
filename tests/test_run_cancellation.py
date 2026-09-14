@@ -37,7 +37,7 @@ async def test_web_channel_separates_execution_from_conversation_identity() -> N
             "run_id": "run-123",
             "conversation_id": "conversation-456",
             "content": "继续分析上一轮问题",
-            "metadata": {"runtime": "linghui-dashboard-agent"},
+            "metadata": {"runtime": "example-runtime"},
         }
     )
 
@@ -166,7 +166,7 @@ async def test_web_channel_publishes_cancel_control_to_the_agent_bus() -> None:
             "type": "cancel_request",
             "session_id": "chat-run-123",
             "content": "",
-            "metadata": {"runtime": "linghui-dashboard-agent"},
+            "metadata": {"runtime": "example-runtime"},
         }
     )
 
@@ -192,7 +192,7 @@ async def test_web_channel_publishes_steer_control_to_the_same_run() -> None:
             "conversation_id": "conversation-456",
             "content": "只看最近三个月",
             "metadata": {
-                "runtime": "linghui-dashboard-agent",
+                "runtime": "example-runtime",
                 "steer_id": "steer-789",
             },
         }
@@ -325,7 +325,7 @@ async def test_web_channel_routes_credential_verification_to_runtime() -> None:
                     "provider": "zhipu",
                     "source": "byok",
                 },
-                "runtime": "linghui-dashboard-agent",
+                "runtime": "example-runtime",
             },
         }
     )
@@ -351,7 +351,7 @@ async def test_web_channel_routes_model_profile_resolution_to_runtime() -> None:
             "content": "",
             "metadata": {
                 "model_profile_id": "glm-5.3-flash",
-                "runtime": "linghui-dashboard-agent",
+                "runtime": "example-runtime",
             },
         }
     )

@@ -918,12 +918,14 @@ class AgentLoop:
             if not isinstance(result, str) or "... (truncated," not in result:
                 return ""
             analysis_match = re.search(
-                r'"analysis_id"\s*:\s*"(?P<analysis_id>'
-                r'[a-z][a-z0-9-]*:[0-9a-f]{64})"',
-                result,
+                r'"analysis_id"\s*:\s*"(?P<analysis_id>[^"]+)"', result
             )
             complete = bool(re.search(r'"status"\s*:\s*"complete"', result))
-            if analysis_match and complete:
+            if (
+                analysis_match
+                and complete
+                and ANALYSIS_ID.fullmatch(analysis_match.group("analysis_id"))
+            ):
                 return f"analysis_id={analysis_match.group('analysis_id')}"
             artifact_match = re.search(
                 r'"artifact_id"\s*:\s*"(?P<artifact_id>'

@@ -317,8 +317,8 @@ async def test_trusted_run_model_and_byok_are_request_scoped_and_never_echoed(
             {
                 "schema_version": 1,
                 "trusted_gateway": {
-                    "project_id": "linghui-ai-suite",
-                    "runtime": "linghui-dashboard-agent",
+                    "project_id": "example-product",
+                    "runtime": "example-runtime",
                 },
             }
         ),
@@ -340,8 +340,8 @@ async def test_trusted_run_model_and_byok_are_request_scoped_and_never_echoed(
                 "source": "byok",
             },
             "model_profile_id": "deepseek-v4-flash-0731",
-            "project_id": "linghui-ai-suite",
-            "runtime": "linghui-dashboard-agent",
+            "project_id": "example-product",
+            "runtime": "example-runtime",
         },
     )
 
@@ -367,8 +367,8 @@ async def test_runtime_returns_sanitized_trace_and_workspace_provenance(
             {
                 "schema_version": 1,
                 "trusted_gateway": {
-                    "project_id": "linghui-ai-suite",
-                    "runtime": "linghui-dashboard-agent",
+                    "project_id": "example-product",
+                    "runtime": "example-runtime",
                 },
             }
         ),
@@ -403,8 +403,8 @@ async def test_runtime_returns_sanitized_trace_and_workspace_provenance(
         conversation_id="conversation-1",
         metadata={
             "model_profile_id": "glm-5.3-flash",
-            "project_id": "linghui-ai-suite",
-            "runtime": "linghui-dashboard-agent",
+            "project_id": "example-product",
+            "runtime": "example-runtime",
         },
     )
 
@@ -673,8 +673,8 @@ async def test_untrusted_messages_cannot_override_model_or_provider_credentials(
             {
                 "schema_version": 1,
                 "trusted_gateway": {
-                    "project_id": "linghui-ai-suite",
-                    "runtime": "linghui-dashboard-agent",
+                    "project_id": "example-product",
+                    "runtime": "example-runtime",
                 },
             }
         ),
@@ -700,7 +700,7 @@ async def test_untrusted_messages_cannot_override_model_or_provider_credentials(
             },
             "model": "deepseek-v4-flash",
             "project_id": "different-project",
-            "runtime": "linghui-dashboard-agent",
+            "runtime": "example-runtime",
         },
     )
 
@@ -723,8 +723,8 @@ async def test_runtime_owns_profile_resolution_and_rejects_mismatched_byok(
             {
                 "schema_version": 1,
                 "trusted_gateway": {
-                    "project_id": "linghui-ai-suite",
-                    "runtime": "linghui-dashboard-agent",
+                    "project_id": "example-product",
+                    "runtime": "example-runtime",
                 },
             }
         ),
@@ -746,8 +746,8 @@ async def test_runtime_owns_profile_resolution_and_rejects_mismatched_byok(
                 "source": "byok",
             },
             "model_profile_id": "deepseek-v4-flash-0731",
-            "project_id": "linghui-ai-suite",
-            "runtime": "linghui-dashboard-agent",
+            "project_id": "example-product",
+            "runtime": "example-runtime",
         },
     )
 
@@ -777,8 +777,8 @@ async def test_runtime_rejects_malformed_byok_before_model_execution(
             {
                 "schema_version": 1,
                 "trusted_gateway": {
-                    "project_id": "linghui-ai-suite",
-                    "runtime": "linghui-dashboard-agent",
+                    "project_id": "example-product",
+                    "runtime": "example-runtime",
                 },
             }
         ),
@@ -796,8 +796,8 @@ async def test_runtime_rejects_malformed_byok_before_model_execution(
         metadata={
             "_provider_credential": credential,
             "model_profile_id": "deepseek-chat",
-            "project_id": "linghui-ai-suite",
-            "runtime": "linghui-dashboard-agent",
+            "project_id": "example-product",
+            "runtime": "example-runtime",
         },
     )
 
@@ -821,8 +821,8 @@ async def test_runtime_uses_the_profile_deployment_provider_for_one_run(
             {
                 "schema_version": 1,
                 "trusted_gateway": {
-                    "project_id": "linghui-ai-suite",
-                    "runtime": "linghui-dashboard-agent",
+                    "project_id": "example-product",
+                    "runtime": "example-runtime",
                 },
             }
         ),
@@ -839,8 +839,8 @@ async def test_runtime_uses_the_profile_deployment_provider_for_one_run(
         conversation_id="conversation-1",
         metadata={
             "model_profile_id": "glm-5.3-flash",
-            "project_id": "linghui-ai-suite",
-            "runtime": "linghui-dashboard-agent",
+            "project_id": "example-product",
+            "runtime": "example-runtime",
         },
     )
 
@@ -861,8 +861,8 @@ async def test_runtime_verifies_provider_credentials_without_echoing_secret(
             {
                 "schema_version": 1,
                 "trusted_gateway": {
-                    "project_id": "linghui-ai-suite",
-                    "runtime": "linghui-dashboard-agent",
+                    "project_id": "example-product",
+                    "runtime": "example-runtime",
                 },
             }
         ),
@@ -882,8 +882,8 @@ async def test_runtime_verifies_provider_credentials_without_echoing_secret(
                 "source": "byok",
             },
             "control": "verify_provider_credential",
-            "project_id": "linghui-ai-suite",
-            "runtime": "linghui-dashboard-agent",
+            "project_id": "example-product",
+            "runtime": "example-runtime",
         },
     )
 
@@ -908,8 +908,8 @@ async def test_runtime_resolves_model_profiles_for_the_trusted_gateway(
             {
                 "schema_version": 1,
                 "trusted_gateway": {
-                    "project_id": "linghui-ai-suite",
-                    "runtime": "linghui-dashboard-agent",
+                    "project_id": "example-product",
+                    "runtime": "example-runtime",
                 },
             }
         ),
@@ -925,8 +925,8 @@ async def test_runtime_resolves_model_profiles_for_the_trusted_gateway(
         metadata={
             "control": "resolve_model_profile",
             "model_profile_id": "glm-5.3-flash",
-            "project_id": "linghui-ai-suite",
-            "runtime": "linghui-dashboard-agent",
+            "project_id": "example-product",
+            "runtime": "example-runtime",
         },
     )
 
@@ -1113,7 +1113,9 @@ async def test_runtime_persists_steer_id_before_acknowledging_it(tmp_path: Path)
 @pytest.mark.asyncio
 async def test_trusted_read_file_returns_audited_content_and_rejects_unapproved_paths(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("ANALYST_RUNTIME_UPLOAD_MANIFEST_SCHEMA", "example-upload/v1")
     upload = tmp_path / "uploads" / "user" / "conversation" / "version"
     upload.mkdir(parents=True)
     uploaded_file = upload / "record.txt"
@@ -1127,7 +1129,7 @@ async def test_trusted_read_file_returns_audited_content_and_rejects_unapproved_
                 "content_sha256": content_hash,
                 "conversation_id": "conversation",
                 "created_at": "2026-09-02T08:00:00.000Z",
-                "schema_version": "analyst-runtime-workspace-upload/v1",
+                "schema_version": "example-upload/v1",
                 "user_id": "user",
                 "version": "version",
                 "workspace_path": str(uploaded_file),

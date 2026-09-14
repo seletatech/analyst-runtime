@@ -118,6 +118,10 @@ An active workspace can contain:
 - `skills/<name>/SKILL.md` — workspace-specific capabilities
 - `memory/` and `sessions/` — runtime-owned state
 
+Gateways migrating an existing upload-manifest protocol can temporarily set
+`ANALYST_RUNTIME_UPLOAD_MANIFEST_SCHEMA` to their current exact schema identifier. New
+integrations should use `analyst-runtime-workspace-upload/v1`.
+
 See [`workspaces/`](workspaces/README.md) for examples. Built-in skills live under
 [`analyst_runtime/skills/`](analyst_runtime/skills/README.md).
 

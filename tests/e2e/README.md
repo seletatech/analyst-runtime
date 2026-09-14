@@ -228,8 +228,7 @@ EOF
 
 ## What the tests cover
 
-Scenarios derived from real user session analysis (178 sessions, 22 users).
-See `/home/mark/.gstack/projects/mesu-ai-studio-website/data/user-scenarios-wip.md` for full scenario catalogue.
+Scenarios cover common agent tasks across scheduling, retrieval, research, and tool execution.
 
 After each test, a markdown result file is written to `tests/e2e/results/YYYY-MM-DD/<test_name>.md`.
 This is the primary artifact for reviewing whether behavior is consistent with expectations.
