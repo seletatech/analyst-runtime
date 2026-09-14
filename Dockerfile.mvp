@@ -32,8 +32,8 @@ RUN case "${TARGETARCH}" in \
     && chmod 0755 /usr/local/bin/excel-mcp \
     && rm /tmp/excel-mcp.tar.gz
 
-COPY analyst-runtime/pyproject.toml analyst-runtime/uv.lock analyst-runtime/README.md analyst-runtime/LICENSE ./
-COPY analyst-runtime/vendor/ /opt/analyst-runtime-wheels/
+COPY pyproject.toml uv.lock README.md LICENSE ./
+COPY vendor/ /opt/analyst-runtime-wheels/
 RUN uv export \
       --locked \
       --no-dev \
@@ -68,13 +68,10 @@ RUN uv export \
            ;; \
        esac
 
-COPY analyst-runtime/analyst_runtime/ analyst_runtime/
+COPY analyst_runtime/ analyst_runtime/
 RUN mkdir -p bridge /root/.analyst-runtime
 
-# Production prompts and skills are image content, so the validated image ID
-# also identifies the exact instruction tree. Generated workspace state is
-# excluded by .dockerignore and supplied by scoped runtime volumes instead.
-COPY workspace/ /app/workspace/
+# Product workspaces are mounted or added by a downstream image.
 RUN mkdir -p \
       /app/workspace/.analyst-runtime \
       /app/workspace/.analyst-runtime/cron \

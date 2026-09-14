@@ -32,7 +32,7 @@ def test_mvp_image_keeps_lock_and_hash_verification() -> None:
     dockerfile = (ROOT / "Dockerfile.mvp").read_text(encoding="utf-8")
 
     for required in (
-        "COPY analyst-runtime/pyproject.toml analyst-runtime/uv.lock",
+        "COPY pyproject.toml uv.lock",
         "uv export",
         "--locked",
         "--require-hashes",
@@ -40,3 +40,13 @@ def test_mvp_image_keeps_lock_and_hash_verification() -> None:
         "--no-index",
     ):
         assert required in dockerfile
+
+
+def test_default_images_build_from_a_standalone_clone() -> None:
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    mvp_dockerfile = (ROOT / "Dockerfile.mvp").read_text(encoding="utf-8")
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+    assert "COPY analyst-runtime/" not in dockerfile + mvp_dockerfile
+    assert "COPY workspace/" not in dockerfile + mvp_dockerfile
+    assert "context: ." in compose

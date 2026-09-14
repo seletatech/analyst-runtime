@@ -14,7 +14,11 @@ from typing import Any, Awaitable, Callable, Literal
 import json_repair
 from loguru import logger
 
-from analyst_runtime.agent.analysis_context import AnalysisArtifactError, AnalysisArtifactStore
+from analyst_runtime.agent.analysis_context import (
+    ANALYSIS_ID,
+    AnalysisArtifactError,
+    AnalysisArtifactStore,
+)
 from analyst_runtime.agent.context import ContextBuilder
 from analyst_runtime.agent.memory import ProtectedMemorySection
 from analyst_runtime.agent.routing import RoutingError, RuntimeRequestRouter
@@ -59,6 +63,7 @@ _SELF_CONTAINED_SEMANTICS_CONFIRMATION_RE = re.compile(
     r"\s*确认以下口径并分析\s*[：:]\s*\S.+\s*",
     re.DOTALL,
 )
+_ARTIFACT_ID_RE = re.compile(r"[a-z][a-z0-9-]{0,63}:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 
 ProgressTool = dict[str, str]
 ProgressCallback = Callable[[str | None, ProgressTool | str | None], Awaitable[None]]
@@ -913,19 +918,16 @@ class AgentLoop:
             if not isinstance(result, str) or "... (truncated," not in result:
                 return ""
             analysis_match = re.search(
-                r'"analysis_id"\s*:\s*"(?P<analysis_id>pqc-defect-loss:[0-9a-f]{64})"',
+                r'"analysis_id"\s*:\s*"(?P<analysis_id>'
+                r'[a-z][a-z0-9-]*:[0-9a-f]{64})"',
                 result,
             )
-            pqc_schema = bool(
-                re.search(r'"schema_version"\s*:\s*"linghui-pqc-defect-loss/v1"', result)
-            )
-            pqc_complete = bool(re.search(r'"status"\s*:\s*"complete"', result))
-            if analysis_match and pqc_schema and pqc_complete:
+            complete = bool(re.search(r'"status"\s*:\s*"complete"', result))
+            if analysis_match and complete:
                 return f"analysis_id={analysis_match.group('analysis_id')}"
             artifact_match = re.search(
                 r'"artifact_id"\s*:\s*"(?P<artifact_id>'
-                r"monthly-event-reconciliation:"
-                r'\d{4}-(?:0[1-9]|1[0-2]):[0-9a-f]{12})"',
+                r'[a-z][a-z0-9-]{0,63}:[A-Za-z0-9][A-Za-z0-9._:-]{0,127})"',
                 result,
             )
             passed_gate = re.search(
@@ -939,14 +941,13 @@ class AgentLoop:
             return ""
         analysis_id = payload.get("analysis_id")
         if (
-            payload.get("schema_version") == "linghui-pqc-defect-loss/v1"
-            and payload.get("status") == "complete"
+            payload.get("status") == "complete"
             and isinstance(analysis_id, str)
-            and _PQC_ANALYSIS_ID_RE.fullmatch(analysis_id)
+            and ANALYSIS_ID.fullmatch(analysis_id)
         ):
             return f"analysis_id={analysis_id}"
         artifact_id = payload.get("artifact_id")
-        if not isinstance(artifact_id, str) or not _MONTHLY_ARTIFACT_ID_RE.fullmatch(artifact_id):
+        if not isinstance(artifact_id, str) or not _ARTIFACT_ID_RE.fullmatch(artifact_id):
             return ""
         release_gate = payload.get("release_gate")
         if not isinstance(release_gate, dict) or release_gate.get("passed") is not True:

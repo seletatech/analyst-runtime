@@ -1,7 +1,7 @@
 x-common-config: &common-config
   build:
-    context: ..
-    dockerfile: analyst-runtime/Dockerfile
+    context: .
+    dockerfile: Dockerfile
   volumes:
     - ~/.analyst-runtime:/root/.analyst-runtime
 

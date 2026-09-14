@@ -437,7 +437,7 @@ async def test_runtime_binds_completed_analysis_and_reuses_it_in_the_same_conver
 ) -> None:
     (tmp_path / "workspace.json").write_text('{"schema_version":1}', encoding="utf-8")
     artifact = {
-        "schema_version": "linghui-pqc-defect-loss/v1",
+        "schema_version": "analyst-runtime-analysis/v1",
         "status": "complete",
         "request": {"product": "HUD-70538", "start_month": "2025-01", "end_month": "2026-07"},
         "population": {
@@ -451,9 +451,9 @@ async def test_runtime_binds_completed_analysis_and_reuses_it_in_the_same_conver
     digest = hashlib.sha256(
         json.dumps(artifact, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
-    analysis_id = f"pqc-defect-loss:{digest}"
+    analysis_id = f"defect-loss:{digest}"
     artifact["analysis_id"] = analysis_id
-    artifact_path = tmp_path / "artifacts" / "analyses" / "pqc-defect-loss" / f"{digest}.json"
+    artifact_path = tmp_path / "artifacts" / "analyses" / "defect-loss" / f"{digest}.json"
     artifact_path.parent.mkdir(parents=True)
     artifact_path.write_text(json.dumps(artifact, ensure_ascii=False), encoding="utf-8")
     provider = _SequenceProvider(
@@ -574,13 +574,13 @@ def test_followup_analysis_requires_explicit_authorization_to_use_new_evidence()
 
 
 def test_analysis_store_rejects_content_that_does_not_match_identity(tmp_path: Path) -> None:
-    analysis_id = "pqc-defect-loss:" + "a" * 64
-    path = tmp_path / "artifacts" / "analyses" / "pqc-defect-loss" / f"{'a' * 64}.json"
+    analysis_id = "defect-loss:" + "a" * 64
+    path = tmp_path / "artifacts" / "analyses" / "defect-loss" / f"{'a' * 64}.json"
     path.parent.mkdir(parents=True)
     path.write_text(
         json.dumps(
             {
-                "schema_version": "linghui-pqc-defect-loss/v1",
+                "schema_version": "analyst-runtime-analysis/v1",
                 "status": "complete",
                 "analysis_id": analysis_id,
                 "request": {"product": "HUD-70538"},
@@ -598,7 +598,7 @@ def test_reloading_the_active_analysis_does_not_create_a_second_context_event(
     tmp_path: Path,
 ) -> None:
     artifact = {
-        "schema_version": "linghui-pqc-defect-loss/v1",
+        "schema_version": "analyst-runtime-analysis/v1",
         "status": "complete",
         "request": {"product": "HUD-70538"},
         "population": {"final_disposition_net_loss_m": 695},
@@ -606,9 +606,9 @@ def test_reloading_the_active_analysis_does_not_create_a_second_context_event(
     digest = hashlib.sha256(
         json.dumps(artifact, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
-    analysis_id = f"pqc-defect-loss:{digest}"
+    analysis_id = f"defect-loss:{digest}"
     artifact["analysis_id"] = analysis_id
-    artifact_path = tmp_path / "artifacts" / "analyses" / "pqc-defect-loss" / f"{digest}.json"
+    artifact_path = tmp_path / "artifacts" / "analyses" / "defect-loss" / f"{digest}.json"
     artifact_path.parent.mkdir(parents=True)
     artifact_path.write_text(json.dumps(artifact, ensure_ascii=False), encoding="utf-8")
     agent = AgentLoop(bus=MessageBus(), provider=_SequenceProvider([]), workspace=tmp_path)
@@ -1127,7 +1127,7 @@ async def test_trusted_read_file_returns_audited_content_and_rejects_unapproved_
                 "content_sha256": content_hash,
                 "conversation_id": "conversation",
                 "created_at": "2026-09-02T08:00:00.000Z",
-                "schema_version": "linghui-workspace-upload/v1",
+                "schema_version": "analyst-runtime-workspace-upload/v1",
                 "user_id": "user",
                 "version": "version",
                 "workspace_path": str(uploaded_file),
@@ -1205,7 +1205,7 @@ async def test_trusted_agent_can_choose_read_file_and_answer_from_uploaded_conte
                 "content_sha256": content_hash,
                 "conversation_id": "conversation",
                 "created_at": "2026-09-02T08:00:00.000Z",
-                "schema_version": "linghui-workspace-upload/v1",
+                "schema_version": "analyst-runtime-workspace-upload/v1",
                 "user_id": "user",
                 "version": "version",
                 "workspace_path": str(uploaded_file),
