@@ -1,11 +1,11 @@
 """Web channel: bridges FastAPI gateway to Analyst Runtime internal bus via HTTP polling.
 
 Message flow:
-  FastAPI WebSocket -> asyncio.Queue (gateway process)
+  FastAPI durable bridge store
       <- GET /internal/sandbox/{id}/inbound  (Analyst Runtime long-polls)
   Analyst Runtime AgentLoop
       -> POST /internal/sandbox/{id}/outbound (Analyst Runtime posts reply)
-      -> asyncio.Queue (gateway process) -> WebSocket -> browser
+      -> durable bridge store -> WebSocket -> browser
 
 The channel uses HTTP long-polling so it works across the Docker process
 boundary (container <-> host). The ExternalBus asyncio.Queue approach only
@@ -17,9 +17,11 @@ from __future__ import annotations
 import asyncio
 import mimetypes
 import os
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
+from uuid import uuid4
 
 import httpx
 from loguru import logger
@@ -54,6 +56,8 @@ def make_message(
     agent_name: str = "",
     run_id: str = "",
     conversation_id: str = "",
+    request_id: str = "",
+    event_id: str = "",
     metadata: dict | None = None,
 ) -> dict:
     """Build a MeSu protocol message dict."""
@@ -70,6 +74,10 @@ def make_message(
         payload["run_id"] = run_id
     if conversation_id:
         payload["conversation_id"] = conversation_id
+    if request_id:
+        payload["request_id"] = request_id
+    if event_id:
+        payload["event_id"] = event_id
     return payload
 
 
@@ -99,6 +107,7 @@ class WebChannel(BaseChannel):
             "GATEWAY_JWT_TOKEN", ""
         )
         self._listener_task: asyncio.Task | None = None
+        self._accepted_request_ids: OrderedDict[str, None] = OrderedDict()
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -144,6 +153,7 @@ class WebChannel(BaseChannel):
             agent_name=msg.metadata.get("agent_name", "director"),
             run_id=run_id,
             conversation_id=msg.conversation_id or "",
+            event_id=msg.event_id,
             metadata={**msg.metadata, "attachments": attachments},
         )
 
@@ -262,7 +272,12 @@ class WebChannel(BaseChannel):
         conversation_id = str(payload.get("conversation_id") or session_id)
         project_id = payload.get("project_id", "")
         metadata = payload.get("metadata", {})
+        request_id = str(payload.get("request_id") or "").strip()
         channel_override = payload.get("channel")  # e.g. "telegram" when routed from webhook
+
+        if request_id and request_id in self._accepted_request_ids:
+            logger.debug(f"Web channel: ignoring duplicate request {request_id}")
+            return
 
         if msg_type == MSG_TYPE_CANCEL_REQUEST:
             await self.bus.publish_inbound(
@@ -276,6 +291,7 @@ class WebChannel(BaseChannel):
                     metadata={**metadata, "control": "cancel"},
                 )
             )
+            self._remember_request(request_id)
             return
 
         if msg_type == MSG_TYPE_STEER_REQUEST:
@@ -386,6 +402,15 @@ class WebChannel(BaseChannel):
                     **metadata,
                 },
             )
+        self._remember_request(request_id)
+
+    def _remember_request(self, request_id: str) -> None:
+        if not request_id:
+            return
+        self._accepted_request_ids[request_id] = None
+        self._accepted_request_ids.move_to_end(request_id)
+        while len(self._accepted_request_ids) > 10_000:
+            self._accepted_request_ids.popitem(last=False)
 
     async def _post_error(self, error: str, session_id: str) -> None:
         """Post an error back to the gateway so the UI sees it."""
@@ -394,6 +419,7 @@ class WebChannel(BaseChannel):
             content=f"Error processing message: {error}",
             sandbox_id=self.sandbox_id,
             session_id=session_id,
+            event_id=f"error:{session_id}:{uuid4().hex}",
         )
         url = f"{self._gateway_url}/internal/sandbox/{self.sandbox_id}/outbound"
         try:

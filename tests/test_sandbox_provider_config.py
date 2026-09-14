@@ -8,18 +8,20 @@ from analyst_runtime.cli.commands import (
     _resolve_sandbox_model,
 )
 from analyst_runtime.config.schema import Config
-from analyst_runtime.model_profiles import resolve_model_profile
 from analyst_runtime.providers import litellm_provider as litellm_provider_module
 from analyst_runtime.providers.litellm_provider import LiteLLMProvider
 from analyst_runtime.providers.registry import (
+    MODEL_PROFILES,
     PROVIDERS,
     canonical_provider_name,
     find_by_name,
+    resolve_model_profile,
     sandbox_provider_names,
 )
 
 
 def test_provider_catalog_drives_runtime_provider_capabilities() -> None:
+    provider_names = {spec.name for spec in PROVIDERS}
     assert sandbox_provider_names() == {
         spec.name for spec in PROVIDERS if spec.sandbox_default_model
     }
@@ -33,6 +35,15 @@ def test_provider_catalog_drives_runtime_provider_capabilities() -> None:
         "tokenhub",
         "zhipu",
     }
+    assert {profile.id for profile in MODEL_PROFILES} == {
+        "deepseek-v4-flash-0731",
+        "glm-5.3-flash",
+    }
+    assert {
+        provider
+        for profile in MODEL_PROFILES
+        for provider, _model in profile.routes
+    } <= provider_names
 
 
 def test_provider_catalog_owns_provider_and_model_aliases() -> None:

@@ -4,8 +4,6 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-import pytest
-
 from analyst_runtime.heartbeat.service import (
     DEFAULT_HEARTBEAT_INTERVAL_S,
     HEARTBEAT_OK_TOKEN,
@@ -13,7 +11,6 @@ from analyst_runtime.heartbeat.service import (
     HeartbeatService,
     _is_heartbeat_empty,
 )
-
 
 # ---------------------------------------------------------------------------
 # _is_heartbeat_empty

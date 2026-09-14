@@ -4,9 +4,8 @@ import json
 from contextvars import ContextVar
 from typing import Any, Awaitable, Callable
 
-from analyst_runtime.bus.delivery import DeliveryAcknowledgement
-
 from analyst_runtime.agent.tools.base import Tool
+from analyst_runtime.bus.delivery import DeliveryAcknowledgement
 from analyst_runtime.bus.events import OutboundMessage
 
 

@@ -7,7 +7,7 @@ import os
 import re
 import uuid
 from contextlib import AsyncExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal
 
@@ -17,7 +17,10 @@ from loguru import logger
 from analyst_runtime.agent.analysis_context import AnalysisArtifactError, AnalysisArtifactStore
 from analyst_runtime.agent.context import ContextBuilder
 from analyst_runtime.agent.memory import ProtectedMemorySection
+from analyst_runtime.agent.routing import RoutingError, RuntimeRequestRouter
+from analyst_runtime.agent.steering import SteeringCoordinator
 from analyst_runtime.agent.subagent import SubagentManager
+from analyst_runtime.agent.telemetry import RunModelTelemetry
 from analyst_runtime.agent.tool_profiles import register_workspace_analysis_tools
 from analyst_runtime.agent.tools.analyze_image_tool import AnalyzeImageTool
 from analyst_runtime.agent.tools.cron import CronTool
@@ -31,8 +34,7 @@ from analyst_runtime.bus.events import InboundMessage, OutboundMessage
 from analyst_runtime.bus.queue import MessageBus
 from analyst_runtime.config.schema import ExecToolConfig
 from analyst_runtime.cron.service import CronService
-from analyst_runtime.model_profiles import resolve_model_profile
-from analyst_runtime.providers.base import LLMProvider, LLMResponse
+from analyst_runtime.providers.base import LLMProvider
 from analyst_runtime.session.manager import HISTORY_SUMMARY_TYPE, Session, SessionManager
 from analyst_runtime.utils.tool_calls import sanitize_tool_name
 from analyst_runtime.workspace import WorkspaceConfiguration
@@ -79,29 +81,6 @@ class AgentLoopResult:
     def __iter__(self):
         yield self.content
         yield self.tools_used
-
-
-@dataclass
-class RunModelTelemetry:
-    model_call_count: int = 0
-    provider_retry_count: int = 0
-    application_retry_count: int = 0
-    usage: dict[str, int] = field(default_factory=dict)
-
-    def record(self, response: LLMResponse) -> None:
-        retries = max(0, response.retry_count)
-        self.model_call_count += 1 + retries
-        self.provider_retry_count += retries
-        for key, value in response.usage.items():
-            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-                self.usage[key] = self.usage.get(key, 0) + value
-
-    def record_application_retry(self) -> None:
-        self.application_retry_count += 1
-
-    @property
-    def retry_count(self) -> int:
-        return self.provider_retry_count + self.application_retry_count
 
 
 class AgentLoop:
@@ -352,7 +331,11 @@ class AgentLoop:
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
         self.tool_profile = tool_profile
-        self.workspace_configuration = WorkspaceConfiguration.load(workspace)
+        workspace_configuration = WorkspaceConfiguration.load(workspace)
+        self.request_router = RuntimeRequestRouter(
+            provider=provider,
+            workspace_configuration=workspace_configuration,
+        )
         self.channel_manager = None  # set post-construction by the caller
         self.context = ContextBuilder(
             workspace,
@@ -364,6 +347,11 @@ class AgentLoop:
             tool_profile=tool_profile,
         )
         self.sessions = session_manager or SessionManager(workspace)
+        self.steering = SteeringCoordinator(
+            bus=bus,
+            sessions=self.sessions,
+            context=self.context,
+        )
         self.analysis_artifacts = AnalysisArtifactStore(workspace)
         self.tools = ToolRegistry()
         self.subagents = SubagentManager(
@@ -400,8 +388,6 @@ class AgentLoop:
         self._background_tasks: set[asyncio.Task] = set()
         self._active_message_tasks: dict[str, asyncio.Task] = {}
         self._message_queues: dict[str, asyncio.Queue[InboundMessage]] = {}
-        self._steer_queues: dict[str, asyncio.Queue[InboundMessage]] = {}
-        self._pending_steer_ids: set[str] = set()
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._message_semaphore = asyncio.Semaphore(self.max_concurrent_messages)
         self._pending_cancellations: set[str] = set()
@@ -1239,24 +1225,6 @@ class AgentLoop:
                 item["text"] = f"{item.get('text', '')}\n\n{instruction}".strip()
                 return
 
-    def _is_trusted_gateway(self, msg: InboundMessage) -> bool:
-        trusted_gateway = self.workspace_configuration.trusted_gateway
-        return bool(
-            trusted_gateway is not None
-            and msg.channel == "web"
-            and msg.metadata.get("runtime") == trusted_gateway.runtime
-            and msg.metadata.get("project_id") == trusted_gateway.project_id
-        )
-
-    def _trusted_gateway_system_instruction(self, msg: InboundMessage) -> str | None:
-        """Accept policy metadata only from the workspace's trusted web runtime."""
-        if not self._is_trusted_gateway(msg):
-            return None
-        instruction = msg.metadata.get("trusted_system_instruction")
-        if not isinstance(instruction, str) or not instruction.strip():
-            return None
-        return instruction.strip()
-
     async def _run_agent_loop(
         self,
         initial_messages: list[dict],
@@ -1527,7 +1495,7 @@ class AgentLoop:
                             parent_uuid=parent_uuid,
                         )
 
-                steered_messages = await self._apply_pending_steers(
+                steered_messages = await self.steering.apply_pending(
                     execution_key,
                     messages,
                     session=session,
@@ -1753,7 +1721,7 @@ class AgentLoop:
                     record_retry("text_only_midtask")
                     continue
 
-                steered_messages = await self._apply_pending_steers(
+                steered_messages = await self.steering.apply_pending(
                     execution_key,
                     messages,
                     session=session,
@@ -1806,130 +1774,6 @@ class AgentLoop:
             usage=model_telemetry.usage,
             error_code=terminal_error_code,
         )
-
-    async def _apply_pending_steers(
-        self,
-        execution_key: str | None,
-        messages: list[dict[str, Any]],
-        *,
-        session: Session | None,
-        parent_uuid: str | None,
-        preceding_assistant: str | None = None,
-    ) -> list[dict[str, Any]] | None:
-        """Apply accepted user steering only at a safe agent-step boundary."""
-        if not execution_key:
-            return None
-        queue = self._steer_queues.get(execution_key)
-        if not queue or queue.empty():
-            return None
-
-        steers: list[InboundMessage] = []
-        while not queue.empty():
-            steers.append(queue.get_nowait())
-            queue.task_done()
-        if not steers:
-            return None
-
-        unapplied = [steer for steer in steers if not self._steer_was_applied(steer)]
-        if not unapplied:
-            for steer in steers:
-                self._pending_steer_ids.discard(str(steer.metadata.get("steer_id") or ""))
-                await self._publish_steer_acknowledgement(steer, applied=True)
-            return messages
-
-        updated = messages
-        if preceding_assistant:
-            updated = self.context.add_assistant_message(
-                updated,
-                preceding_assistant,
-                None,
-            )
-        combined = "\n\n".join(
-            steer.content.strip() for steer in unapplied if steer.content.strip()
-        )
-        updated.append(
-            {
-                "role": "user",
-                "content": (
-                    "[The user added this instruction while you were working. "
-                    "Apply it now to the current task.]\n\n" + combined
-                ),
-            }
-        )
-        if session:
-            applied_ids = list(session.metadata.get("applied_steer_ids") or [])
-            for steer in unapplied:
-                steer_id = str(steer.metadata.get("steer_id") or "")
-                session.add_event(
-                    {
-                        "uuid": str(uuid.uuid4()),
-                        "parent_uuid": parent_uuid,
-                        "type": "user_input",
-                        "steer": True,
-                        "steer_id": steer_id,
-                        "content": steer.content,
-                        "channel": steer.channel,
-                        "chat_id": steer.chat_id,
-                    }
-                )
-                if steer_id and steer_id not in applied_ids:
-                    applied_ids.append(steer_id)
-            session.metadata["applied_steer_ids"] = applied_ids[-512:]
-            # Persist the idempotency record before acknowledging the command.
-            self.sessions.save(session)
-        for steer in steers:
-            self._pending_steer_ids.discard(str(steer.metadata.get("steer_id") or ""))
-            await self._publish_steer_acknowledgement(steer, applied=True)
-        return updated
-
-    def _steer_was_applied(self, steer: InboundMessage) -> bool:
-        steer_id = str(steer.metadata.get("steer_id") or "")
-        if not steer_id:
-            return False
-        session = self.sessions.get_or_create(steer.session_key)
-        return steer_id in set(session.metadata.get("applied_steer_ids") or [])
-
-    async def _publish_steer_acknowledgement(
-        self,
-        steer: InboundMessage,
-        *,
-        applied: bool,
-    ) -> None:
-        await self.bus.publish_outbound(
-            OutboundMessage(
-                channel=steer.channel,
-                chat_id=steer.chat_id,
-                content="",
-                run_id=steer.run_id,
-                conversation_id=steer.conversation_id,
-                metadata={
-                    "control": "steer_applied" if applied else "steer_rejected",
-                    "steer_id": steer.metadata.get("steer_id"),
-                },
-            )
-        )
-
-    async def _reject_pending_steers(self, execution_key: str) -> None:
-        queue = self._steer_queues.pop(execution_key, None)
-        if not queue:
-            return
-        while not queue.empty():
-            steer = queue.get_nowait()
-            queue.task_done()
-            self._pending_steer_ids.discard(str(steer.metadata.get("steer_id") or ""))
-            await self.bus.publish_outbound(
-                OutboundMessage(
-                    channel=steer.channel,
-                    chat_id=steer.chat_id,
-                    content="",
-                    run_id=steer.run_id,
-                    conversation_id=steer.conversation_id,
-                    metadata={
-                        "control": "steer_rejected",
-                        "steer_id": steer.metadata.get("steer_id"),
-                    },
-                )
-            )
 
     async def _maybe_compact_active_context(
         self,
@@ -2071,69 +1915,12 @@ class AgentLoop:
                     self._pending_cancellations.discard(execution_key)
                     continue
 
-                if msg.metadata.get("control") == "steer":
-                    if self._steer_was_applied(msg):
-                        await self._publish_steer_acknowledgement(msg, applied=True)
-                        continue
-                    steer_id = str(msg.metadata.get("steer_id") or "")
-                    if steer_id and steer_id in self._pending_steer_ids:
-                        await self.bus.publish_outbound(
-                            OutboundMessage(
-                                channel=msg.channel,
-                                chat_id=msg.chat_id,
-                                content="",
-                                run_id=msg.run_id,
-                                conversation_id=msg.conversation_id,
-                                metadata={
-                                    "control": "steer_pending",
-                                    "steer_id": steer_id,
-                                },
-                            )
-                        )
-                        continue
+                if msg.metadata.get("control") in {"steer", "steer_status"}:
                     message_task = self._active_message_tasks.get(execution_key)
-                    if message_task and not message_task.done() and msg.content.strip():
-                        if steer_id:
-                            self._pending_steer_ids.add(steer_id)
-                        self._steer_queues.setdefault(execution_key, asyncio.Queue()).put_nowait(
-                            msg
-                        )
-                    else:
-                        await self.bus.publish_outbound(
-                            OutboundMessage(
-                                channel=msg.channel,
-                                chat_id=msg.chat_id,
-                                content="",
-                                run_id=msg.run_id,
-                                conversation_id=msg.conversation_id,
-                                metadata={
-                                    "control": "steer_rejected",
-                                    "steer_id": msg.metadata.get("steer_id"),
-                                },
-                            )
-                        )
-                    continue
-
-                if msg.metadata.get("control") == "steer_status":
-                    steer_id = str(msg.metadata.get("steer_id") or "")
-                    if self._steer_was_applied(msg):
-                        await self._publish_steer_acknowledgement(msg, applied=True)
-                    elif steer_id in self._pending_steer_ids:
-                        await self.bus.publish_outbound(
-                            OutboundMessage(
-                                channel=msg.channel,
-                                chat_id=msg.chat_id,
-                                content="",
-                                run_id=msg.run_id,
-                                conversation_id=msg.conversation_id,
-                                metadata={
-                                    "control": "steer_pending",
-                                    "steer_id": steer_id,
-                                },
-                            )
-                        )
-                    else:
-                        await self._publish_steer_acknowledgement(msg, applied=False)
+                    await self.steering.handle_control(
+                        msg,
+                        run_active=bool(message_task and not message_task.done()),
+                    )
                     continue
 
                 queue = self._message_queues.setdefault(execution_key, asyncio.Queue())
@@ -2162,7 +1949,7 @@ class AgentLoop:
                 if current_task and current_task.cancelling():
                     break
         finally:
-            await self._reject_pending_steers(execution_key)
+            await self.steering.reject_pending(execution_key)
             if current_task and current_task.cancelling():
                 while not queue.empty():
                     queue.get_nowait()
@@ -2243,63 +2030,10 @@ class AgentLoop:
         Returns:
             The response message, or None if no response needed.
         """
-        # Request credentials are trusted transport data, never conversation
-        # metadata. Remove them before logging, persistence, progress, or output.
-        request_credential = msg.metadata.pop("_provider_credential", None)
-        if not self._is_trusted_gateway(msg):
-            request_credential = None
-
-        if msg.metadata.get("control") == "verify_provider_credential":
-            verified = False
-            if isinstance(request_credential, dict):
-                api_key = request_credential.get("api_key")
-                provider_name = request_credential.get("provider")
-                if isinstance(api_key, str) and isinstance(provider_name, str):
-                    verified = await self.provider.verify_request_credentials(
-                        api_key=api_key,
-                        provider=provider_name,
-                    )
-            return OutboundMessage(
-                channel=msg.channel,
-                chat_id=msg.chat_id,
-                content="",
-                run_id=msg.run_id,
-                conversation_id=msg.conversation_id,
-                metadata={
-                    "control": "provider_credential_verified",
-                    "verified": verified,
-                },
-            )
-
-        if msg.metadata.get("control") == "resolve_model_profile" and self._is_trusted_gateway(msg):
-            profile_id = msg.metadata.get("model_profile_id")
-            try:
-                profile = resolve_model_profile(str(profile_id))
-            except ValueError:
-                return OutboundMessage(
-                    channel=msg.channel,
-                    chat_id=msg.chat_id,
-                    content="",
-                    run_id=msg.run_id,
-                    conversation_id=msg.conversation_id,
-                    metadata={
-                        "control": "model_profile_rejected",
-                        "model_profile_id": str(profile_id),
-                    },
-                )
-            return OutboundMessage(
-                channel=msg.channel,
-                chat_id=msg.chat_id,
-                content="",
-                run_id=msg.run_id,
-                conversation_id=msg.conversation_id,
-                metadata={
-                    "control": "model_profile_resolved",
-                    "model": profile.model,
-                    "model_profile_id": profile.id,
-                    "provider": profile.provider,
-                },
-            )
+        request_credential = self.request_router.take_request_credential(msg)
+        control_response = await self.request_router.handle_control(msg, request_credential)
+        if control_response is not None:
+            return control_response
 
         # System messages route back via chat_id ("channel:chat_id")
         if msg.channel == "system":
@@ -2491,7 +2225,7 @@ class AgentLoop:
         )
         runtime_provenance = self._runtime_provenance()
         confirmed_question = None
-        if self._is_trusted_gateway(msg):
+        if self.request_router.is_trusted_gateway(msg):
             confirmed_question = self._remember_confirmed_semantics(msg.content, history_snapshot)
         analysis_question = confirmed_question or msg.content
         confirmed_semantics_sha256 = (
@@ -2581,7 +2315,7 @@ class AgentLoop:
             )
         self._append_system_instruction(
             initial_messages,
-            self._trusted_gateway_system_instruction(msg),
+            self.request_router.trusted_system_instruction(msg),
         )
 
         # Emit prompt_snapshot (system prompt assembled for this turn)
@@ -2628,36 +2362,23 @@ class AgentLoop:
                 )
             )
 
-        trusted_profile = None
-        if self._is_trusted_gateway(msg):
-            profile_id = msg.metadata.get("model_profile_id")
-            if isinstance(profile_id, str):
-                try:
-                    trusted_profile = resolve_model_profile(profile_id)
-                except ValueError:
-                    logger.warning("Rejected unsupported model profile %r", profile_id)
-        if self._is_trusted_gateway(msg) and trusted_profile is None:
+        try:
+            routing = self.request_router.resolve_run(msg, request_credential)
+        except RoutingError as error:
+            error_code = (
+                self.MODEL_PROFILE_ERROR_CODE
+                if error.kind == "model_profile"
+                else self.MODEL_CREDENTIAL_ERROR_CODE
+            )
             return OutboundMessage(
                 channel=msg.channel,
                 chat_id=msg.chat_id,
-                content=self._support_error_message(self.MODEL_PROFILE_ERROR_CODE),
+                content=self._support_error_message(error_code),
                 run_id=msg.run_id,
                 conversation_id=msg.conversation_id,
-                metadata={"error_code": self.MODEL_PROFILE_ERROR_CODE},
+                metadata={"error_code": error_code},
             )
-        if (
-            trusted_profile is not None
-            and isinstance(request_credential, dict)
-            and request_credential.get("provider") != trusted_profile.provider
-        ):
-            return OutboundMessage(
-                channel=msg.channel,
-                chat_id=msg.chat_id,
-                content=self._support_error_message(self.MODEL_CREDENTIAL_ERROR_CODE),
-                run_id=msg.run_id,
-                conversation_id=msg.conversation_id,
-                metadata={"error_code": self.MODEL_CREDENTIAL_ERROR_CODE},
-            )
+        trusted_profile = routing.profile
         trusted_model = trusted_profile.model if trusted_profile else None
         # Model selection is frozen for this run and must not mutate the
         # conversation session's configured default.
@@ -2680,25 +2401,7 @@ class AgentLoop:
             session.metadata["model"] = migrated
             active_model = migrated
 
-        credential_token = None
-        if isinstance(request_credential, dict):
-            api_key = request_credential.get("api_key")
-            provider_name = request_credential.get("provider")
-            if (
-                isinstance(api_key, str)
-                and api_key
-                and trusted_profile is not None
-                and provider_name == trusted_profile.provider
-            ):
-                credential_token = self.provider.set_request_credentials(
-                    api_key=api_key,
-                    provider=trusted_profile.provider,
-                )
-        elif trusted_profile is not None:
-            credential_token = self.provider.set_request_provider(
-                provider=trusted_profile.provider,
-            )
-        try:
+        with self.request_router.bind_provider(routing):
             loop_result = await self._run_agent_loop(
                 initial_messages,
                 on_progress=on_progress or _bus_progress,
@@ -2708,8 +2411,6 @@ class AgentLoop:
                 execution_key=msg.execution_key,
                 allow_tools=not interpretation_only,
             )
-        finally:
-            self.provider.reset_request_credentials(credential_token)
         final_content, tools_used = loop_result
 
         terminal_error_code = loop_result.error_code
@@ -2748,7 +2449,7 @@ class AgentLoop:
         current_analysis_id = session.metadata.get("active_analysis_id")
         if (
             not terminal_error_code
-            and self._is_trusted_gateway(msg)
+            and self.request_router.is_trusted_gateway(msg)
             and tools_used
             and tool_events
             and all(event.get("status") == "completed" for event in tool_events)

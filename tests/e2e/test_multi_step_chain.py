@@ -34,7 +34,7 @@ def test_multi_step_research_uses_multiple_tools(sb: StagingSandbox) -> None:
     )
     # Use wait_for_last_final_response: agent sends intermediate progress messages
     # (e.g. "one article failed, trying another") before completing the full chain.
-    final = sb.wait_for_last_final_response(session_id, timeout=160, idle_seconds=10)
+    sb.wait_for_last_final_response(session_id, timeout=160, idle_seconds=10)
 
     tool_calls = sb.read_tool_calls(session_id)
 

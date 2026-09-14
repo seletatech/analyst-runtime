@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from analyst_runtime.agent.context import ContextBuilder
-from analyst_runtime.agent.loop import AgentLoop
+from analyst_runtime.agent.routing import RuntimeRequestRouter
 from analyst_runtime.bus.events import InboundMessage
 from analyst_runtime.workspace import WorkspaceConfiguration
 
@@ -189,8 +189,10 @@ def test_explicit_skill_names_are_loaded_without_all_workspace_skills(tmp_path: 
 
 
 def test_only_internal_linghui_web_messages_can_add_system_policy() -> None:
-    agent = object.__new__(AgentLoop)
-    agent.workspace_configuration = WorkspaceConfiguration.load(WORKSPACE)
+    router = RuntimeRequestRouter(
+        provider=object(),  # type: ignore[arg-type]
+        workspace_configuration=WorkspaceConfiguration.load(WORKSPACE),
+    )
     policy = "TRUSTED_POLICY"
     trusted = InboundMessage(
         channel="web",
@@ -236,10 +238,10 @@ def test_only_internal_linghui_web_messages_can_add_system_policy() -> None:
         },
     )
 
-    assert agent._trusted_gateway_system_instruction(trusted) == policy
-    assert agent._trusted_gateway_system_instruction(forged_channel) is None
-    assert agent._trusted_gateway_system_instruction(forged_runtime) is None
-    assert agent._trusted_gateway_system_instruction(forged_project) is None
+    assert router.trusted_system_instruction(trusted) == policy
+    assert router.trusted_system_instruction(forged_channel) is None
+    assert router.trusted_system_instruction(forged_runtime) is None
+    assert router.trusted_system_instruction(forged_project) is None
 
 
 def test_untrusted_user_content_stays_out_of_system_prompt() -> None:
