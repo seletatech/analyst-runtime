@@ -13,6 +13,8 @@ ARG ANALYST_RUNTIME_INSTALL_DEPENDENCIES=1
 # this image to reduce build time and production attack surface.
 WORKDIR /app
 
+RUN apk upgrade --no-cache
+
 COPY analyst-runtime/pyproject.toml analyst-runtime/uv.lock analyst-runtime/README.md analyst-runtime/LICENSE ./
 COPY analyst-runtime/vendor/ /opt/analyst-runtime-wheels/
 RUN uv export \
