@@ -204,8 +204,8 @@ class WebChannel(BaseChannel):
                     headers={
                         "Authorization": f"Bearer {self._gateway_token}",
                         "Content-Type": media_type,
-                        "X-Analyst Runtime-Run-Id": run_id,
-                        "X-Analyst Runtime-Filename": quote(path.name),
+                        "X-Agent-Runtime-Run-Id": run_id,
+                        "X-Agent-Runtime-Filename": quote(path.name),
                     },
                     timeout=30.0,
                 )

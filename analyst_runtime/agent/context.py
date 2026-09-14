@@ -70,6 +70,10 @@ class ContextBuilder:
         if not self.minimal:
             always_skills = self.skills.get_always_skills()
             active_skill_names = list(dict.fromkeys(always_skills + (skill_names or [])))
+            if self.tool_profile == "trusted-analysis":
+                active_skill_names = [
+                    name for name in active_skill_names if name != "memory"
+                ]
             if active_skill_names:
                 active_content = self.skills.load_skills_for_context(active_skill_names)
                 if active_content:

@@ -111,6 +111,55 @@ class _AnalysisAndProcessExec(_StaticAnalysisExec):
         return json.dumps({"status": "complete", "finding": "process evidence"})
 
 
+@pytest.mark.parametrize(
+    "result",
+    [
+        'Traceback (most recent call last):\nModuleNotFoundError: No module named "openpyxl"',
+        "files listed first\nTraceback (most recent call last):\nIndexError: list index out of range",
+    ],
+)
+def test_python_traceback_is_failed_tool_result(result: str) -> None:
+    assert AgentLoop._tool_call_succeeded(result) is False
+
+
+@pytest.mark.asyncio
+async def test_tool_progress_omits_empty_reason_marker(tmp_path: Path) -> None:
+    provider = _SequenceProvider(
+        [
+            LLMResponse(
+                content=None,
+                reasoning_content="private chain of thought",
+                tool_calls=[
+                    ToolCallRequest(
+                        id="read-1",
+                        name="exec",
+                        arguments={"command": "inspect data"},
+                    )
+                ],
+            ),
+            LLMResponse(
+                content=(
+                    "一句话结论：完成。\n可确认事实：已核对。\n"
+                    "缺失数据与反证条件：无。\n老板可能还没注意到：无。\n下一步：结束。"
+                )
+            ),
+        ]
+    )
+    agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path)
+    agent.tools.register(_StaticAnalysisExec({"status": "complete"}))
+    progress: list[str] = []
+
+    async def capture(text: str | None, _tool: object = None) -> None:
+        if text:
+            progress.append(text)
+
+    await agent._run_agent_loop(
+        [{"role": "user", "content": "inspect"}], on_progress=capture
+    )
+
+    assert progress == []
+
+
 def _message(chat_id: str, content: str | None = None) -> InboundMessage:
     return InboundMessage(
         channel="web",
@@ -118,6 +167,143 @@ def _message(chat_id: str, content: str | None = None) -> InboundMessage:
         chat_id=chat_id,
         content=content or f"question for {chat_id}",
     )
+
+
+def test_explicit_confirmation_persists_the_latest_semantic_card(tmp_path: Path) -> None:
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=_SequenceProvider([]),
+        workspace=tmp_path,
+        tool_profile="trusted-analysis",
+    )
+    proposal = (
+        "## 待确认的定义与口径\n\n"
+        "- 查询对象：批次 251103L1003A-1\n"
+        "- 时间范围：完整生命周期\n"
+    )
+
+    agent._remember_confirmed_semantics(
+        "确认并按上述口径分析",
+        [
+            {
+                "role": "user",
+                "content": "请查询批次 251103L1003A-1 的完整生产档案",
+            },
+            {"role": "assistant", "content": proposal},
+        ],
+    )
+
+    memory = (tmp_path / "memory" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "已确认的制造语义" in memory
+    assert "批次 251103L1003A-1" in memory
+    assert "适用问题" in memory
+    assert proposal in agent.context.build_system_prompt()
+    assert agent._confirmed_semantics_reuse_instruction(
+        "请查询批次 251103L1003A-1 的完整生产档案"
+    )
+    assert not agent._confirmed_semantics_reuse_instruction("查询另一个批次")
+
+
+def test_self_contained_confirmation_persists_user_supplied_semantics(tmp_path: Path) -> None:
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=_SequenceProvider([]),
+        workspace=tmp_path,
+        tool_profile="trusted-analysis",
+    )
+    question = "HUD-70538 的褶皱类不良一共有多少米？"
+    confirmation = (
+        "确认以下口径并分析：产品为 HUD-70538；范围为 2025-01 至 2026-07；"
+        "PQC 品质资料优先；净损耗只计最终判定和处理为 NG、隔离的卷。"
+    )
+
+    confirmed_question = agent._remember_confirmed_semantics(
+        confirmation,
+        [
+            {"role": "user", "content": question},
+            {
+                "role": "assistant",
+                "content": "## 待确认的定义与口径\n\n- 时间范围：请确认",
+            },
+        ],
+    )
+
+    memory = (tmp_path / "memory" / "MEMORY.md").read_text(encoding="utf-8")
+    assert confirmed_question == question
+    assert confirmation in memory
+    assert "- 时间范围：请确认" not in memory
+
+
+def test_second_clarification_reply_forces_analysis_to_start(tmp_path: Path) -> None:
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=_SequenceProvider([]),
+        workspace=tmp_path,
+        tool_profile="trusted-analysis",
+    )
+    history = [
+        {"role": "user", "content": "从当前数据中找出良率最低的几个生产批次。"},
+        {
+            "role": "assistant",
+            "content": "## 待确认的定义与口径\n\n- 产品、时间、批次粒度？",
+        },
+        {
+            "role": "user",
+            "content": "全时间段、全部产品、全部部门。",
+        },
+        {
+            "role": "assistant",
+            "content": "已确认范围。还差：按子批次？良率按合格米数除以投入米数？",
+        },
+    ]
+
+    instruction = agent._semantic_clarification_instruction(
+        "按子批次，良率按合格米数除以投入米数。",
+        history,
+    )
+
+    assert instruction is not None
+    assert "第二轮" in instruction
+    assert "必须开始调用分析工具" in instruction
+    assert "不得再生成确认卡" in instruction
+
+
+def test_first_clarification_reply_is_bounded_without_fixed_reply_phrase(
+    tmp_path: Path,
+) -> None:
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=_SequenceProvider([]),
+        workspace=tmp_path,
+        tool_profile="trusted-analysis",
+    )
+
+    instruction = agent._semantic_clarification_instruction(
+        "从当前数据中找出良率最低的几个生产批次。",
+        [],
+    )
+
+    assert instruction is not None
+    assert "最多三个" in instruction
+    assert "每个编号只能包含一个问题" in instruction
+    assert "不要要求固定回复措辞" in instruction
+    assert "确认并按上述口径分析" not in instruction
+
+
+def test_non_confirmation_does_not_persist_semantics(tmp_path: Path) -> None:
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=_SequenceProvider([]),
+        workspace=tmp_path,
+        tool_profile="trusted-analysis",
+    )
+
+    agent._remember_confirmed_semantics(
+        "可以",
+        [{"role": "assistant", "content": "## 待确认的定义与口径\n\n- 范围：全部"}],
+    )
+
+    assert not (tmp_path / "memory" / "MEMORY.md").exists()
 
 
 @pytest.mark.asyncio

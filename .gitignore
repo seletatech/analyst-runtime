@@ -46,6 +46,7 @@ tests/e2e/results/
 !tests/test_tool_registry.py
 !tests/test_whatsapp_command.py
 !tests/test_session_tool_use_pairing.py
+!tests/test_context_recall_eval.py
 !tests/test_duplicate_message_in_context.py
 !tests/test_tool_result_history.py
 !tests/test_malformed_tool_call_resilience.py

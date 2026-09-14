@@ -5,6 +5,7 @@ NOTE: Session files grow unbounded without periodic cleanup. Call
 on startup to prune stale sessions.
 """
 
+import hashlib
 import json
 import time
 from dataclasses import dataclass, field
@@ -52,7 +53,12 @@ class Session:
         self.events.append(event)
         self.updated_at = datetime.now()
 
-    def get_history(self, max_messages: int = 500) -> list[dict[str, Any]]:
+    def get_history(
+        self,
+        max_messages: int = 500,
+        *,
+        context: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         """Reconstruct LLM-compatible message list from events.
 
         - history_summary → synthetic user+assistant pair summarising older turns
@@ -64,6 +70,7 @@ class Session:
         """
         if max_messages <= 0:
             return []
+        max_messages = max(2, max_messages)
 
         # First pass: collect IDs of tool_calls that have a matching tool_result event,
         # so we can skip orphaned llm_response blocks in the second pass.
@@ -144,13 +151,68 @@ class Session:
             # prompt_snapshot → skip
 
         if len(out) <= max_messages:
+            if context is not None:
+                context.update(
+                    {
+                        "strategy": "full",
+                        "messages_before": len(out),
+                        "messages_after": len(out),
+                        "messages_dropped": 0,
+                        "turns_retained": sum(message.get("role") == "user" for message in out),
+                        "messages_before_sha256": [self._message_sha256(message) for message in out],
+                        "messages_after_sha256": [self._message_sha256(message) for message in out],
+                    }
+                )
             return out
 
-        trimmed = out[-max_messages:]
-        for index, message in enumerate(trimmed):
+        # Tool-heavy turns can exceed the whole message window by themselves. Keep
+        # completed conversational outcomes, not an unusable tail of orphaned tool calls.
+        turns: list[list[dict[str, Any]]] = []
+        for message in out:
             if message.get("role") == "user":
-                return trimmed[index:]
-        return []
+                turns.append([message])
+            elif turns:
+                turns[-1].append(message)
+
+        compacted: list[dict[str, Any]] = []
+        for turn in turns:
+            compacted.append(turn[0])
+            final = next(
+                (
+                    message
+                    for message in reversed(turn[1:])
+                    if message.get("role") == "assistant" and not message.get("tool_calls")
+                ),
+                None,
+            )
+            if final is not None:
+                compacted.append(final)
+
+        trimmed = compacted[-max_messages:]
+        while trimmed and trimmed[0].get("role") != "user":
+            trimmed.pop(0)
+        if context is not None:
+            context.update(
+                {
+                    "strategy": "turn_outcomes",
+                    "messages_before": len(out),
+                    "messages_after": len(trimmed),
+                    "messages_dropped": len(out) - len(trimmed),
+                    "turns_retained": sum(
+                        message.get("role") == "user" for message in trimmed
+                    ),
+                    "messages_before_sha256": [self._message_sha256(message) for message in out],
+                    "messages_after_sha256": [self._message_sha256(message) for message in trimmed],
+                }
+            )
+        return trimmed
+
+    @staticmethod
+    def _message_sha256(message: dict[str, Any]) -> str:
+        encoded = json.dumps(
+            message, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
+        ).encode()
+        return hashlib.sha256(encoded).hexdigest()
 
     def count_turns(self) -> int:
         """Count conversation turns (number of user_input events)."""

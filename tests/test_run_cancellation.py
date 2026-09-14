@@ -115,7 +115,10 @@ async def test_web_channel_routes_output_and_attachments_by_run_id(
 
     attachment_request = requests[0][1]
     outbound_request = requests[1][1]
-    assert attachment_request["headers"]["X-Analyst Runtime-Run-Id"] == "run-123"
+    attachment_headers = attachment_request["headers"]
+    assert attachment_headers["X-Agent-Runtime-Run-Id"] == "run-123"
+    assert attachment_headers["X-Agent-Runtime-Filename"] == "result.csv"
+    assert all(" " not in name for name in attachment_headers)
     assert outbound_request["json"]["session_id"] == "chat-run-123"
     assert outbound_request["json"]["run_id"] == "run-123"
     assert outbound_request["json"]["conversation_id"] == "conversation-456"

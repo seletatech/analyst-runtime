@@ -35,6 +35,14 @@ def test_simple_command_passes(tool):
     assert tool._guard_command("ls -la", str(tool.working_dir)) is None
 
 
+@pytest.mark.parametrize(
+    "command",
+    ["grep -r batch data 2>/dev/null", "grep -r batch data >/dev/null 2>&1"],
+)
+def test_null_device_redirection_passes(tool, command):
+    assert tool._guard_command(command, str(tool.working_dir)) is None
+
+
 def test_gws_calendar_insert_no_description_passes(tool):
     cmd = 'gws calendar +insert --summary "Meeting" --start "2026-04-02T10:00:00+08:00" --end "2026-04-02T11:00:00+08:00"'
     assert tool._guard_command(cmd, str(tool.working_dir)) is None

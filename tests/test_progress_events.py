@@ -150,7 +150,6 @@ async def test_agent_loop_reports_public_step_and_tool_completion(tmp_path: Path
     assert answer == "资料目录检查完成。"
     assert tools == ["list_dir"]
     assert progress == [
-        ("Reason", None),
         ("正在检查当前资料目录。", None),
         (
             None,
@@ -176,7 +175,7 @@ async def test_agent_loop_reports_public_step_and_tool_completion(tmp_path: Path
 
 
 @pytest.mark.asyncio
-async def test_agent_loop_emits_reason_before_tool_when_provider_content_is_empty(
+async def test_agent_loop_does_not_emit_empty_reason_before_tool(
     tmp_path: Path,
 ) -> None:
     workspace = tmp_path / "workspace"
@@ -197,8 +196,7 @@ async def test_agent_loop_emits_reason_before_tool_when_provider_content_is_empt
         on_progress=capture,
     )
 
-    assert progress[0] == ("Reason", None)
-    assert progress[1][1] == {
+    assert progress[0][1] == {
         "detail": ".",
         "id": "call-1",
         "kind": "read",
