@@ -169,7 +169,7 @@ class QQConfig(Base):
 
 
 class WebConfig(Base):
-    """Web channel configuration (MeSu gateway message bus bridge)."""
+    """Web channel configuration for an authenticated application gateway."""
 
     enabled: bool = False
     sandbox_id: str = ""  # Sandbox identifier for message bus routing

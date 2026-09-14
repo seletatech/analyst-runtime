@@ -1,7 +1,7 @@
 # Workspace templates
 
 <!-- project-nav
-{"entrypoints":[],"owners":[],"truth":{},"production":"profile-source-not-heineda-production"}
+{"entrypoints":[],"owners":[],"truth":{},"production":"profile-source"}
 -->
 
 ## 目录职责

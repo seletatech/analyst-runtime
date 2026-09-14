@@ -110,9 +110,8 @@ The skill format and metadata structure follow OpenClaw's conventions to maintai
 
 When the runtime loads skills, it follows this priority order (highest first):
 
-1. **Workspace skills** — `<workspace>/skills/<name>/SKILL.md` (per-sandbox, highest priority)
-2. **MeSu extension skills** — `mesu/skills/<name>/SKILL.md` (deployment-level overrides)
-3. **Built-in skills** — this directory (available everywhere, lowest priority)
+1. **Workspace skills** — `<workspace>/skills/<name>/SKILL.md` (highest priority)
+2. **Built-in skills** — this directory (available everywhere, lowest priority)
 
 A workspace skill with the same name as a built-in skill will shadow the built-in.
 

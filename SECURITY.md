@@ -2,17 +2,17 @@
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in analyst_runtime, please report it by:
+If you discover a security vulnerability in Analyst Runtime, please report it by:
 
 1. **DO NOT** open a public GitHub issue
-2. Create a private security advisory on GitHub or contact the repository maintainers (xubinrencs@gmail.com)
+2. Create a private security advisory in this repository
 3. Include:
    - Description of the vulnerability
    - Steps to reproduce
    - Potential impact
    - Suggested fix (if any)
 
-We aim to respond to security reports within 48 hours.
+Do not include live credentials, customer data, or other secrets in the report.
 
 ## Security Best Practices
 
@@ -253,11 +253,11 @@ Before deploying analyst_runtime:
 
 ## Updates
 
-**Last Updated**: 2026-02-03
+**Last Updated**: 2026-09-14
 
 For the latest security updates and announcements, check:
-- GitHub Security Advisories: https://github.com/weepsdanky/analyst-runtime/security/advisories
-- Release Notes: https://github.com/weepsdanky/analyst-runtime/releases
+- GitHub Security Advisories: https://github.com/seletatech/analyst-runtime/security/advisories
+- Release Notes: https://github.com/seletatech/analyst-runtime/releases
 
 ## License
 

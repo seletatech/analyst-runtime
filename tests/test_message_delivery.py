@@ -1,6 +1,6 @@
-from analyst_runtime.agent.tools.message import MessageTool
 import json
 
+from analyst_runtime.agent.tools.message import MessageTool
 from analyst_runtime.bus.events import OutboundMessage
 
 

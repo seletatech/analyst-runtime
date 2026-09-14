@@ -31,7 +31,7 @@ from analyst_runtime.bus.queue import MessageBus
 from analyst_runtime.channels.base import BaseChannel
 
 # ---------------------------------------------------------------------------
-# MeSu message protocol (JSON)
+# Application gateway message protocol (JSON)
 # ---------------------------------------------------------------------------
 
 MSG_TYPE_USER_MESSAGE = "user_message"
@@ -60,7 +60,7 @@ def make_message(
     event_id: str = "",
     metadata: dict | None = None,
 ) -> dict:
-    """Build a MeSu protocol message dict."""
+    """Build an application gateway protocol message dict."""
     payload = {
         "type": msg_type,
         "session_id": session_id,

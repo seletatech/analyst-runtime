@@ -1,145 +1,164 @@
 # Analyst Runtime
 
-<!-- project-nav
-{"entrypoints":["Dockerfile","docker-compose.yml","pyproject.toml","uv.lock",".gitignore"],"owners":[],"truth":{},"production":"analyst-runtime-image"}
--->
+An open-source Python runtime for running tool-using AI agents inside real products.
 
-## 目录职责
+Analyst Runtime owns the complete execution path: model routing, reasoning, tool calls and
+results, retries, sessions, workspace context, progress events, steering, and final delivery.
+Product gateways and user interfaces stay thin; product-specific prompts and data stay in a
+workspace outside the runtime.
 
-`analyst-runtime` 的第一方项目内容与导航边界。它属于 **analyst-runtime** 边界。当前目录不替代父级架构说明，也不接管其他 Module 的数据或安全决策。
+> **Status:** Alpha. The runtime is already used as an application component, but its public
+> APIs and configuration may still change before 1.0.
 
-生产属性：本目录由 Analyst Runtime 项目维护；是否进入最终 image/profile 由 Dockerfile、package 配置和 workspace 选择显式决定。
+## Why Analyst Runtime
 
-## 从这里开始
+- **One agent loop:** every model call and tool decision follows the same observable path.
+- **Provider-neutral:** providers live behind `LLMProvider`; OpenAI-compatible vendors are
+  declarative catalog entries rather than parallel implementations.
+- **Product isolation:** identity, instructions, memory, and artifacts live in a supplied
+  workspace instead of being compiled into the runtime.
+- **Controlled execution:** tool profiles, workspace-scoped file access, authenticated gateway
+  metadata, request-scoped credentials, and ordered progress events are runtime concerns.
+- **Deployable:** use the CLI directly, run the long-lived gateway, or embed the Python package
+  behind your own authenticated application gateway.
 
-| 你要做的事情 | 下一步 |
-|---|---|
-| 查看主要入口或配置 | 打开 [`Dockerfile`](<Dockerfile>) |
-| 继续查找实现或资料 | 进入 [`analyst_runtime/`](<analyst_runtime/README.md>) |
-| 运行该区域验证 | 从 Runtime 仓库根执行测试与 build；依赖入口见 [`pyproject.toml`](<pyproject.toml>) |
+## Quick start
 
-## 子目录
+Prerequisites: Python 3.11 or 3.12, [uv](https://docs.astral.sh/uv/), and an API key for a
+supported model provider.
 
-| 子目录 | 内容 | 什么时候进入 |
-|---|---|---|
-| [`analyst_runtime/`](<analyst_runtime/README.md>) | `analyst-runtime/analyst_runtime` 的第一方项目内容与导航边界 | 修改或核验该职责时 |
-| [`bridge/`](<bridge/README.md>) | `analyst-runtime/bridge` 的第一方项目内容与导航边界 | 修改或核验该职责时 |
-| [`tests/`](<tests/README.md>) | Analyst Runtime 的恢复、工具、安全与端到端行为验证 | 修改或核验该职责时 |
-| [`vendor/`](<vendor/README.md>) | `analyst-runtime/vendor` 的第一方项目内容与导航边界 | 修改或核验该职责时 |
-| [`workspaces/`](<workspaces/README.md>) | `analyst-runtime/workspaces` 的第一方项目内容与导航边界 | 修改或核验该职责时 |
+```bash
+git clone https://github.com/seletatech/analyst-runtime.git
+cd analyst-runtime
+uv sync --extra dev
+uv run analyst-runtime onboard
+```
 
-## 关键文件
+`onboard` creates `~/.analyst-runtime/config.json` and a starter workspace. Add a provider key
+and set `agents.defaults.model` in that generated file. For example, an OpenRouter setup uses:
 
-| 文件 | 用途 |
-|---|---|
-| [`Dockerfile`](<Dockerfile>) | 构建或部署配置入口 |
-| [`docker-compose.yml`](<docker-compose.yml>) | 构建或部署配置入口 |
-| [`pyproject.toml`](<pyproject.toml>) | 构建、依赖和版本配置 |
-| [`uv.lock`](<uv.lock>) | 构建、依赖和版本配置 |
-| [`.gitignore`](<.gitignore>) | 本目录的主要实现、配置或受控资料 |
-| [`Dockerfile.mvp`](<Dockerfile.mvp>) | 本目录的主要实现、配置或受控资料 |
-| [`LICENSE`](<LICENSE>) | 本目录的主要实现、配置或受控资料 |
-| [`SECURITY.md`](<SECURITY.md>) | 本目录的主要实现、配置或受控资料 |
+```json
+{
+  "agents": {
+    "defaults": {
+      "model": "openrouter/openai/gpt-4o-mini"
+    }
+  },
+  "providers": {
+    "openrouter": {
+      "apiKey": "YOUR_OPENROUTER_KEY"
+    }
+  }
+}
+```
 
-## 依赖方向
+These are fragments of the generated configuration; keep its other fields unchanged. Then run
+one request:
 
-Runtime 通过稳定 channel、provider、tool 和 workspace Interface 工作；profile 不得绕过工具权限或把未验证输出升级为外部事实。
+```bash
+uv run analyst-runtime agent -m "Summarize the files in my workspace"
+```
 
-## 修改规则
+Or start an interactive session:
 
-未验证 Agent 输出不得写成机器事实、指标或控制命令。
+```bash
+uv run analyst-runtime agent
+```
 
-## 验证方式
+Run `uv run analyst-runtime --help` to see gateway, channel, provider, and cron commands.
 
-从 Analyst Runtime 仓库根执行 `uv sync --frozen --extra dev`、`uv run pytest -q -m "not e2e"` 和 `uv build`；e2e 只在所需外部依赖已受控配置时运行。
+## Architecture
 
-## 相关文档
+```text
+CLI / product gateway / chat channel
+                 │
+                 ▼
+           message bus
+                 │
+                 ▼
+           agent loop ───── session + workspace context
+            │     │
+            │     └──────── tool registry ── files / exec / web / MCP / integrations
+            ▼
+         LLMProvider ────── provider catalog ── model APIs
+                 │
+                 ▼
+      ordered progress + final reply
+```
 
-本目录是 Analyst Runtime 上游仓库根；集成仓库应从自己的 gitlink/consumer contract 导航到这里。
+| Path | Responsibility |
+| --- | --- |
+| `analyst_runtime/agent/` | Agent loop, context, routing, steering, memory, and tool profiles |
+| `analyst_runtime/providers/` | Stable provider port, shared adapters, and provider catalog |
+| `analyst_runtime/agent/tools/` | Tool contracts and built-in tool implementations |
+| `analyst_runtime/channels/` | CLI, web-gateway, and chat transport adapters |
+| `analyst_runtime/session/` | Durable conversation state |
+| `analyst_runtime/config/` | Configuration schema and loading |
+| `workspaces/` | Copyable example personas and runtime policy |
+| `bridge/` | Optional Node.js channel bridges |
+| `tests/` | Contract, regression, security-boundary, and staging end-to-end tests |
 
-Analyst Runtime is our private, product-neutral agent execution engine for
-enterprise applications. It owns model routing, tool execution, conversation
-state, workspace prompts, optional runtime profiles, and authenticated product
-gateway integration.
+The critical dependency direction is:
 
-The public integration name is **Analyst Runtime**. The Python package is
-`analyst_runtime`, the command is `analyst-runtime`, and product-specific
-identity and behavior live in a supplied workspace rather than in the core.
+```text
+product UI/gateway → Analyst Runtime → LLMProvider/tool ports → external services
+```
 
-See [Prompt caching and bounded context](PROMPT_CACHING.md) for provider cache
-behavior, tool-result retention and verification evidence.
+Model selection changes routing for a run; it does not create another agent architecture.
+Product prompts, customer data, and product-specific semantics belong in the consuming
+workspace, not this repository.
 
-## Origin and attribution
+## Workspaces and extension points
 
-Analyst Runtime began as a deeply modified derivative of
-[HKUDS/nanobot](https://github.com/HKUDS/nanobot), an open-source,
-self-hosted personal AI agent framework. We are grateful to the NanoBot
-maintainers and contributors for the original architecture and implementation.
+An active workspace can contain:
 
-This repository preserves the original MIT license and copyright notice. It is
-an independently maintained private derivative and is not affiliated with or
-endorsed by the NanoBot project.
+- `SOUL.md` — agent identity and communication style
+- `AGENTS.md` — operating instructions and domain rules
+- `workspace.json` — trusted gateway identity and runtime policy
+- `skills/<name>/SKILL.md` — workspace-specific capabilities
+- `memory/` and `sessions/` — runtime-owned state
 
-## Runtime boundary
+See [`workspaces/`](workspaces/README.md) for examples. Built-in skills live under
+[`analyst_runtime/skills/`](analyst_runtime/skills/README.md).
 
-- `analyst_runtime/` contains the generic Python runtime.
-- `workspaces/` contains copyable product prompt and runtime-profile templates.
-- `bridge/` contains optional channel bridges.
-- `tests/` contains the runtime contract and regression suite.
-
-Analyst Runtime is the only agent orchestrator in consuming products. It owns every model
-call, reasoning step, tool decision/execution, retry, session update, workspace read, and
-final message. UI frameworks may adapt its events for display but must not wrap it in a
-second agent loop.
-
-Run-scoped `steer_request` control messages are accepted only while that run is active. The
-Runtime queues the instruction and applies it after the current tool-call batch (or before a
-text-only response becomes final), persists it as user input, acknowledges `steer_applied`,
-and then continues the same agent loop. The session also persists a bounded set of applied
-`steer_id` values so retries and status lookups are idempotent after transport disconnects. It
-reports a received command as `pending` until the next safe boundary and never starts a parallel
-run for steering.
-
-Vercel AI SDK (`ai` and `@ai-sdk/*`) is forbidden in this repository, including the optional
-Node channel bridges. Python provider access remains behind `LLMProvider`; product model
-selection arrives as a trusted profile ID and is resolved here to its provider/model. BYOK
-verification and model calls both remain behind the Runtime provider port. BYOK secrets must
-be removed from inbound metadata before any log, session event, trace, or outbound message.
-
-### Provider architecture
-
-`analyst_runtime/providers/registry.py` is the single provider catalog. Each `ProviderSpec`
-owns the provider identity, endpoint/environment metadata, model-ID normalization, sandbox
-default, and whether request-scoped credentials are accepted. CLI configuration and the
-LiteLLM adapter derive their supported providers from that catalog; they must not introduce
-their own provider allowlists or endpoint maps.
-
-`LLMProvider` is the stable Runtime port. Add a separate adapter file only when a provider has
-a genuinely different protocol or authentication lifecycle (for example OAuth or Bedrock).
-OpenAI-compatible vendors remain declarative `ProviderSpec` entries and use the shared
-adapter. Switching a product profile is therefore a routing/configuration change inside the
-same agent loop, never a new Runtime implementation.
-
-The active product workspace is supplied by the consuming repository. Its
-`SOUL.md` defines who the agent is and `AGENTS.md` defines how it works. Runtime state,
-customer data, prompts, and artifacts do not belong in this repository.
-
-Linghui runs the `trusted-analysis` tool profile. It exposes workspace-scoped file and exec
-tools, Web/Firecrawl retrieval, and `message`. It does not expose MCP, Composio, external
-business integrations, audio/vision tools, `spawn`, `cron`, or manufacturing-semantics tools.
-Semantic confirmation is an ordinary system-prompt rule and
-continues through the same Analyst Runtime conversation.
+Add an OpenAI-compatible model vendor as a `ProviderSpec` in
+[`analyst_runtime/providers/registry.py`](analyst_runtime/providers/registry.py). Add a provider
+adapter only when the wire protocol or authentication lifecycle is genuinely different.
 
 ## Development
 
 ```bash
-uv sync --extra dev
-uv run pytest
+uv sync --frozen --extra dev
+uv run ruff check .
+uv run pytest -q -m "not e2e"
+uv build
 ```
 
-Build from a consuming repository whose root contains both `analyst-runtime/`
-and `workspace/`:
+Staging end-to-end tests need an authenticated consuming application and are documented in
+[`tests/e2e/README.md`](tests/e2e/README.md). See [`CONTRIBUTING.md`](CONTRIBUTING.md) before
+opening a pull request and [`SECURITY.md`](SECURITY.md) for vulnerability reporting and safe
+deployment notes.
 
-```bash
-docker build -f analyst-runtime/Dockerfile -t analyst-runtime:latest .
-```
+## Security model
+
+This runtime can call models, access files, execute commands, and contact external services.
+Those capabilities are intentionally powerful. Use the narrowest tool profile, enable
+workspace restrictions, isolate production processes, restrict channel senders, and never put
+request-scoped credentials into prompts, logs, sessions, or progress events.
+
+The repository is MIT licensed, but that is not a security guarantee. Review the threat model
+for your deployment before exposing any gateway or chat channel.
+
+## Origin and attribution
+
+Analyst Runtime began as a deeply modified derivative of
+[HKUDS/nanobot](https://github.com/HKUDS/nanobot), an open-source, self-hosted AI agent
+framework. We are grateful to its maintainers and contributors for the original architecture
+and implementation.
+
+This repository preserves the original MIT copyright notice. Analyst Runtime is independently
+maintained and is not affiliated with or endorsed by the nanobot project.
+
+## License
+
+[MIT](LICENSE)

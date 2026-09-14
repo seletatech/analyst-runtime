@@ -366,7 +366,7 @@ def onboard():
     console.print("  1. Add your API key to [cyan]~/.analyst-runtime/config.json[/cyan]")
     console.print("     Get one at: https://openrouter.ai/keys")
     console.print("  2. Chat: [cyan]analyst_runtime agent -m \"Hello!\"[/cyan]")
-    console.print("\n[dim]Want Telegram/WhatsApp? See: https://github.com/weepsdanky/analyst-runtime#-chat-apps[/dim]")
+    console.print("\n[dim]More setup guidance: https://github.com/seletatech/analyst-runtime[/dim]")
 
 
 

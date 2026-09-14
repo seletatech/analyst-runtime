@@ -588,7 +588,7 @@ class AgentLoop:
         restrict_to_workspace: bool,
         audit_reads: bool = False,
     ) -> None:
-        """Register the single Analyst Runtime capability set used by Linghui."""
+        """Register the workspace-scoped analysis capability set."""
         register_workspace_analysis_tools(
             self.tools,
             workspace=self.workspace,

@@ -140,7 +140,7 @@ class ChannelManager:
             except ImportError as e:
                 logger.warning(f"QQ channel not available: {e}")
 
-        # MeSu Web channel (gateway message bus bridge)
+        # Authenticated application gateway message-bus bridge
         if self.config.channels.web.enabled:
             try:
                 from analyst_runtime.channels.web import WebChannel
