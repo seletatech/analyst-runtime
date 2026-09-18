@@ -94,10 +94,19 @@ def test_workspace_contains_only_minimal_prompt_and_business_data() -> None:
         "workspace/skills/xlsx/capture_evidence.py",
         "workspace/skills/xlsx/LICENSE",
         "workspace/skills/xlsx/SKILL.md",
+        "workspace/skills/production-ocr-tables/SKILL.md",
         "workspace/workspace.json",
         "workspace/data/README.md",
+        "workspace/data/uploads/README.md",
     }
     assert (WORKSPACE / "skills/xlsx/SKILL.md").is_file()
+    assert (WORKSPACE / "skills/production-ocr-tables/SKILL.md").is_file()
+    production_ocr_skill = (
+        WORKSPACE / "skills/production-ocr-tables/SKILL.md"
+    ).read_text(encoding="utf-8")
+    assert "never turn `rows` directly into a flat table" in production_ocr_skill
+    assert "skip every coordinate covered by that span" in production_ocr_skill
+    assert "stable cell `id`" in production_ocr_skill
     xlsx_skill = (WORKSPACE / "skills/xlsx/SKILL.md").read_text(encoding="utf-8")
     assert "A match only locates an anchor" in xlsx_skill
     assert "Never load an entire worksheet" in xlsx_skill
@@ -304,7 +313,11 @@ def test_prompt_is_management_focused_without_fixed_metric_checklist() -> None:
     for required in ("管理决策", "业务结果", "异常", "行动"):
         assert required in prompt
     assert "最终回答前必须重新读取" in prompt
-    assert "在检索 `data/` 前先读取并执行 `skills/xlsx/SKILL.md`" in prompt
+    assert "先读取并执行 `skills/xlsx/SKILL.md`" in prompt
+    assert (
+        "在检索 `data/production-records/` 前先读取并执行"
+        in prompt
+    )
     for forbidden in (
         "monthly-event-reconciliation",
         "metric_contract",

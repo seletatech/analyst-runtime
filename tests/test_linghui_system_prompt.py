@@ -93,6 +93,8 @@ def test_linghui_prompt_requires_semantic_confirmation_before_analysis() -> None
     assert "PQC、OQC、IQC、良率或客诉资料" in prompt
     assert "生产记录只用于补充批次谱系、生产过程和交叉核验" in prompt
     assert "70538" not in (WORKSPACE / "AGENTS.md").read_text(encoding="utf-8")
+    assert "skills/production-ocr-tables/SKILL.md" in prompt
+    assert "`cells`/`merged_ranges` 为准" in prompt
 
 
 def test_new_or_changed_analysis_semantics_require_user_confirmation() -> None:
