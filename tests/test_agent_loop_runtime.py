@@ -234,6 +234,52 @@ def test_self_contained_confirmation_persists_user_supplied_semantics(tmp_path: 
     assert "- 时间范围：请确认" not in memory
 
 
+def test_natural_language_confirmation_persists_the_complete_card(tmp_path: Path) -> None:
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=_SequenceProvider([]),
+        workspace=tmp_path,
+        tool_profile="trusted-analysis",
+    )
+    question = "2026年一到六月份涂布总米数有多少？"
+    answer = (
+        "1.所有产品\n"
+        "2.2026年1月1号到6月30号，按涂布收卷/产出完成日期归属\n"
+        "3.逐条记录累加涂布产出米数，只计涂布工序产出"
+    )
+    assert agent._remember_confirmed_semantics(
+        answer,
+        [
+            {"role": "user", "content": question},
+            {
+                "role": "assistant",
+                "content": "## 待确认的定义与口径\n- 产品范围\n- 时间范围\n- 统计口径",
+            },
+        ],
+    ) == question
+    memory = (tmp_path / "memory" / "MEMORY.md").read_text(encoding="utf-8")
+    assert answer in memory
+
+
+def test_memory_hit_does_not_append_first_turn_clarification(tmp_path: Path) -> None:
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=_SequenceProvider([]),
+        workspace=tmp_path,
+        tool_profile="trusted-analysis",
+    )
+    question = "2026年一到六月份涂布总米数有多少？"
+    agent._remember_confirmed_semantics(
+        "确认并按上述口径分析",
+        [
+            {"role": "user", "content": question},
+            {"role": "assistant", "content": "待确认的定义与口径：所有产品；2026-01 至 2026-06"},
+        ],
+    )
+    assert agent._confirmed_semantics_reuse_instruction(question)
+    assert agent._semantic_clarification_instruction(question, []) is None
+
+
 def test_second_clarification_reply_forces_analysis_to_start(tmp_path: Path) -> None:
     agent = AgentLoop(
         bus=MessageBus(),

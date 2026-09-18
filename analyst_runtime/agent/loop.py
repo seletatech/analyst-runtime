@@ -63,6 +63,7 @@ _SELF_CONTAINED_SEMANTICS_CONFIRMATION_RE = re.compile(
     r"\s*确认以下口径并分析\s*[：:]\s*\S.+\s*",
     re.DOTALL,
 )
+_SEMANTICS_LIST_ITEM_RE = re.compile(r"(?m)^\s*(?:\d+[.)、]|[-•])\s*\S+")
 _ARTIFACT_ID_RE = re.compile(r"[a-z][a-z0-9-]{0,63}:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 
 ProgressTool = dict[str, str]
@@ -410,8 +411,9 @@ class AgentLoop:
         supplies_complete_card = bool(
             _SELF_CONTAINED_SEMANTICS_CONFIRMATION_RE.fullmatch(user_message)
         )
+        supplies_natural_card = self._looks_like_complete_natural_semantics_answer(user_message)
         if self.tool_profile != "trusted-analysis" or not (
-            confirms_previous_card or supplies_complete_card
+            confirms_previous_card or supplies_complete_card or supplies_natural_card
         ):
             return None
         proposal_index = next(
@@ -427,7 +429,7 @@ class AgentLoop:
         if proposal_index is None:
             return None
         proposal = str(history[proposal_index].get("content") or "").strip()
-        confirmed_semantics = user_message.strip() if supplies_complete_card else proposal
+        confirmed_semantics = user_message.strip() if (supplies_complete_card or supplies_natural_card) else proposal
         question = next(
             (
                 str(message.get("content") or "").strip()
@@ -468,6 +470,26 @@ class AgentLoop:
         )
         return question
 
+    @staticmethod
+    def _looks_like_complete_natural_semantics_answer(user_message: str) -> bool:
+        """Recognize a self-contained natural-language answer without a magic phrase.
+
+        Clarification replies remain in the current conversation unless they look
+        like a complete multi-part card.  This deliberately accepts the numbered
+        answers used by the product and a long, clause-rich one-line answer, while
+        rejecting questions and short partial replies.
+        """
+        normalized = re.sub(r"\s+", " ", user_message).strip()
+        if len(normalized) < 20 or any(mark in normalized for mark in ("？", "?")):
+            return False
+        if len(_SEMANTICS_LIST_ITEM_RE.findall(user_message)) >= 2:
+            return True
+        clause_count = sum(normalized.count(mark) for mark in ("；", ";", "：", ":"))
+        return clause_count >= 2 and any(
+            marker in normalized
+            for marker in ("范围", "日期", "按", "只计", "排除", "所有", "单位", "口径")
+        )
+
     def _semantic_clarification_instruction(
         self,
         user_message: str,
@@ -476,7 +498,14 @@ class AgentLoop:
         if self.tool_profile != "trusted-analysis" or (
             _EXPLICIT_SEMANTICS_CONFIRMATION_RE.fullmatch(user_message)
             or _SELF_CONTAINED_SEMANTICS_CONFIRMATION_RE.fullmatch(user_message)
+            or self._looks_like_complete_natural_semantics_answer(user_message)
         ):
+            return None
+        # A cross-conversation memory hit already proves that the complete
+        # semantic card was confirmed.  Do not append the first-turn
+        # clarification policy as well: the two system instructions conflict,
+        # and the later clarification instruction can make the model ask again.
+        if self._confirmed_semantics_sha256(user_message) is not None:
             return None
         proposal_index = next(
             (
