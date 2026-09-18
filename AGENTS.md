@@ -24,7 +24,7 @@ retry policy, session/workspace context, trace, and final message delivery.
   is no longer active. Persist each applied `steer_id` before acknowledgement and answer
   retries/status lookups idempotently from that durable session state.
 - Product prompts and data belong in the consuming workspace, not this generic runtime.
-- The Linghui `trusted-analysis` profile contains workspace file/exec, Web/Firecrawl retrieval,
+- The `trusted-analysis` profile contains workspace file/exec, Web/Firecrawl retrieval,
   and `message`. It must not connect MCP or register Composio, external integrations,
   audio/vision, `spawn`, `cron`, or manufacturing-semantics tools. Semantics confirmation is a
   workspace prompt rule carried by ordinary conversation history, not a tool or handoff.

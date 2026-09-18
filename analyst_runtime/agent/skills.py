@@ -9,16 +9,11 @@ from pathlib import Path
 # Default builtin skills directory (relative to this file)
 BUILTIN_SKILLS_DIR = Path(__file__).parent.parent / "skills"
 
-# MeSu extension skills directory
-MESU_SKILLS_DIR = Path(__file__).parent.parent.parent / "mesu" / "skills"
-
-
 def get_skill_read_roots(workspace: Path) -> list[Path]:
     """Return filesystem roots that agents may read skill files from."""
     roots = [workspace]
-    for root in (MESU_SKILLS_DIR, BUILTIN_SKILLS_DIR):
-        if root.exists():
-            roots.append(root)
+    if BUILTIN_SKILLS_DIR.exists():
+        roots.append(BUILTIN_SKILLS_DIR)
     return roots
 
 
@@ -34,7 +29,6 @@ class SkillsLoader:
         self.workspace = workspace
         self.workspace_skills = workspace / "skills"
         self.builtin_skills = builtin_skills_dir or BUILTIN_SKILLS_DIR
-        self.mesu_skills = MESU_SKILLS_DIR
 
     def list_skills(self, filter_unavailable: bool = True) -> list[dict[str, str]]:
         """
@@ -55,14 +49,6 @@ class SkillsLoader:
                     skill_file = skill_dir / "SKILL.md"
                     if skill_file.exists():
                         skills.append({"name": skill_dir.name, "path": str(skill_file), "source": "workspace"})
-
-        # MeSu extension skills (override builtin, overridden by workspace)
-        if self.mesu_skills and self.mesu_skills.exists():
-            for skill_dir in self.mesu_skills.iterdir():
-                if skill_dir.is_dir():
-                    skill_file = skill_dir / "SKILL.md"
-                    if skill_file.exists() and not any(s["name"] == skill_dir.name for s in skills):
-                        skills.append({"name": skill_dir.name, "path": str(skill_file), "source": "mesu"})
 
         # Built-in skills
         if self.builtin_skills and self.builtin_skills.exists():
@@ -91,12 +77,6 @@ class SkillsLoader:
         workspace_skill = self.workspace_skills / name / "SKILL.md"
         if workspace_skill.exists():
             return workspace_skill.read_text(encoding="utf-8")
-
-        # Check MeSu extensions
-        if self.mesu_skills:
-            mesu_skill = self.mesu_skills / name / "SKILL.md"
-            if mesu_skill.exists():
-                return mesu_skill.read_text(encoding="utf-8")
 
         # Check built-in
         if self.builtin_skills:

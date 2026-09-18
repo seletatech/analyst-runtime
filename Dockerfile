@@ -52,15 +52,14 @@ RUN apt-get update && \
 WORKDIR /app
 
 # Install Python dependencies first (cached layer)
-COPY analyst-runtime/pyproject.toml analyst-runtime/README.md analyst-runtime/LICENSE ./
+COPY pyproject.toml README.md LICENSE ./
 RUN mkdir -p analyst_runtime bridge && touch analyst_runtime/__init__.py && \
     uv pip install --system --no-cache . && \
     rm -rf analyst_runtime bridge
 
 # Copy the full source and install
-COPY analyst-runtime/analyst_runtime/ analyst_runtime/
-COPY analyst-runtime/bridge/ bridge/
-COPY workspace/ /app/workspace/
+COPY analyst_runtime/ analyst_runtime/
+COPY bridge/ bridge/
 RUN uv pip install --system --no-cache .
 
 # Build the WhatsApp bridge

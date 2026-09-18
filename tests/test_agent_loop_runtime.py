@@ -317,8 +317,8 @@ async def test_trusted_run_model_and_byok_are_request_scoped_and_never_echoed(
             {
                 "schema_version": 1,
                 "trusted_gateway": {
-                    "project_id": "linghui-ai-suite",
-                    "runtime": "linghui-dashboard-agent",
+                    "project_id": "example-product",
+                    "runtime": "example-runtime",
                 },
             }
         ),
@@ -340,8 +340,8 @@ async def test_trusted_run_model_and_byok_are_request_scoped_and_never_echoed(
                 "source": "byok",
             },
             "model_profile_id": "deepseek-v4-flash-0731",
-            "project_id": "linghui-ai-suite",
-            "runtime": "linghui-dashboard-agent",
+            "project_id": "example-product",
+            "runtime": "example-runtime",
         },
     )
 
@@ -367,8 +367,8 @@ async def test_runtime_returns_sanitized_trace_and_workspace_provenance(
             {
                 "schema_version": 1,
                 "trusted_gateway": {
-                    "project_id": "linghui-ai-suite",
-                    "runtime": "linghui-dashboard-agent",
+                    "project_id": "example-product",
+                    "runtime": "example-runtime",
                 },
             }
         ),
@@ -403,8 +403,8 @@ async def test_runtime_returns_sanitized_trace_and_workspace_provenance(
         conversation_id="conversation-1",
         metadata={
             "model_profile_id": "glm-5.3-flash",
-            "project_id": "linghui-ai-suite",
-            "runtime": "linghui-dashboard-agent",
+            "project_id": "example-product",
+            "runtime": "example-runtime",
         },
     )
 
@@ -437,7 +437,7 @@ async def test_runtime_binds_completed_analysis_and_reuses_it_in_the_same_conver
 ) -> None:
     (tmp_path / "workspace.json").write_text('{"schema_version":1}', encoding="utf-8")
     artifact = {
-        "schema_version": "linghui-pqc-defect-loss/v1",
+        "schema_version": "analyst-runtime-analysis/v1",
         "status": "complete",
         "request": {"product": "HUD-70538", "start_month": "2025-01", "end_month": "2026-07"},
         "population": {
@@ -451,9 +451,9 @@ async def test_runtime_binds_completed_analysis_and_reuses_it_in_the_same_conver
     digest = hashlib.sha256(
         json.dumps(artifact, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
-    analysis_id = f"pqc-defect-loss:{digest}"
+    analysis_id = f"defect-loss:{digest}"
     artifact["analysis_id"] = analysis_id
-    artifact_path = tmp_path / "artifacts" / "analyses" / "pqc-defect-loss" / f"{digest}.json"
+    artifact_path = tmp_path / "artifacts" / "analyses" / "defect-loss" / f"{digest}.json"
     artifact_path.parent.mkdir(parents=True)
     artifact_path.write_text(json.dumps(artifact, ensure_ascii=False), encoding="utf-8")
     provider = _SequenceProvider(
@@ -574,13 +574,13 @@ def test_followup_analysis_requires_explicit_authorization_to_use_new_evidence()
 
 
 def test_analysis_store_rejects_content_that_does_not_match_identity(tmp_path: Path) -> None:
-    analysis_id = "pqc-defect-loss:" + "a" * 64
-    path = tmp_path / "artifacts" / "analyses" / "pqc-defect-loss" / f"{'a' * 64}.json"
+    analysis_id = "defect-loss:" + "a" * 64
+    path = tmp_path / "artifacts" / "analyses" / "defect-loss" / f"{'a' * 64}.json"
     path.parent.mkdir(parents=True)
     path.write_text(
         json.dumps(
             {
-                "schema_version": "linghui-pqc-defect-loss/v1",
+                "schema_version": "analyst-runtime-analysis/v1",
                 "status": "complete",
                 "analysis_id": analysis_id,
                 "request": {"product": "HUD-70538"},
@@ -598,7 +598,7 @@ def test_reloading_the_active_analysis_does_not_create_a_second_context_event(
     tmp_path: Path,
 ) -> None:
     artifact = {
-        "schema_version": "linghui-pqc-defect-loss/v1",
+        "schema_version": "analyst-runtime-analysis/v1",
         "status": "complete",
         "request": {"product": "HUD-70538"},
         "population": {"final_disposition_net_loss_m": 695},
@@ -606,9 +606,9 @@ def test_reloading_the_active_analysis_does_not_create_a_second_context_event(
     digest = hashlib.sha256(
         json.dumps(artifact, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
-    analysis_id = f"pqc-defect-loss:{digest}"
+    analysis_id = f"defect-loss:{digest}"
     artifact["analysis_id"] = analysis_id
-    artifact_path = tmp_path / "artifacts" / "analyses" / "pqc-defect-loss" / f"{digest}.json"
+    artifact_path = tmp_path / "artifacts" / "analyses" / "defect-loss" / f"{digest}.json"
     artifact_path.parent.mkdir(parents=True)
     artifact_path.write_text(json.dumps(artifact, ensure_ascii=False), encoding="utf-8")
     agent = AgentLoop(bus=MessageBus(), provider=_SequenceProvider([]), workspace=tmp_path)
@@ -673,8 +673,8 @@ async def test_untrusted_messages_cannot_override_model_or_provider_credentials(
             {
                 "schema_version": 1,
                 "trusted_gateway": {
-                    "project_id": "linghui-ai-suite",
-                    "runtime": "linghui-dashboard-agent",
+                    "project_id": "example-product",
+                    "runtime": "example-runtime",
                 },
             }
         ),
@@ -700,7 +700,7 @@ async def test_untrusted_messages_cannot_override_model_or_provider_credentials(
             },
             "model": "deepseek-v4-flash",
             "project_id": "different-project",
-            "runtime": "linghui-dashboard-agent",
+            "runtime": "example-runtime",
         },
     )
 
@@ -723,8 +723,8 @@ async def test_runtime_owns_profile_resolution_and_rejects_mismatched_byok(
             {
                 "schema_version": 1,
                 "trusted_gateway": {
-                    "project_id": "linghui-ai-suite",
-                    "runtime": "linghui-dashboard-agent",
+                    "project_id": "example-product",
+                    "runtime": "example-runtime",
                 },
             }
         ),
@@ -746,8 +746,8 @@ async def test_runtime_owns_profile_resolution_and_rejects_mismatched_byok(
                 "source": "byok",
             },
             "model_profile_id": "deepseek-v4-flash-0731",
-            "project_id": "linghui-ai-suite",
-            "runtime": "linghui-dashboard-agent",
+            "project_id": "example-product",
+            "runtime": "example-runtime",
         },
     )
 
@@ -757,6 +757,57 @@ async def test_runtime_owns_profile_resolution_and_rejects_mismatched_byok(
     assert provider.request_credentials == []
     assert response is not None
     assert response.metadata["error_code"] == "ANALYST-RUNTIME-CREDENTIAL-001"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "credential",
+    [
+        {"provider": "deepseek"},
+        {"api_key": "", "provider": "deepseek"},
+        {"api_key": 123, "provider": "deepseek"},
+    ],
+)
+async def test_runtime_rejects_malformed_byok_before_model_execution(
+    tmp_path: Path,
+    credential: dict[str, object],
+) -> None:
+    (tmp_path / "workspace.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "trusted_gateway": {
+                    "project_id": "example-product",
+                    "runtime": "example-runtime",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    provider = _SequenceProvider([LLMResponse(content="must not run")])
+    agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path)
+    message = InboundMessage(
+        channel="web",
+        sender_id="user",
+        chat_id="chat-run",
+        content="analyze",
+        run_id="run-1",
+        conversation_id="conversation-1",
+        metadata={
+            "_provider_credential": credential,
+            "model_profile_id": "deepseek-chat",
+            "project_id": "example-product",
+            "runtime": "example-runtime",
+        },
+    )
+
+    response = await agent._process_message(message)
+
+    assert provider.models == []
+    assert provider.request_credentials == []
+    assert response is not None
+    assert response.metadata["error_code"] == "ANALYST-RUNTIME-CREDENTIAL-001"
+    assert "_provider_credential" not in message.metadata
 
 
 @pytest.mark.asyncio
@@ -770,8 +821,8 @@ async def test_runtime_uses_the_profile_deployment_provider_for_one_run(
             {
                 "schema_version": 1,
                 "trusted_gateway": {
-                    "project_id": "linghui-ai-suite",
-                    "runtime": "linghui-dashboard-agent",
+                    "project_id": "example-product",
+                    "runtime": "example-runtime",
                 },
             }
         ),
@@ -788,8 +839,8 @@ async def test_runtime_uses_the_profile_deployment_provider_for_one_run(
         conversation_id="conversation-1",
         metadata={
             "model_profile_id": "glm-5.3-flash",
-            "project_id": "linghui-ai-suite",
-            "runtime": "linghui-dashboard-agent",
+            "project_id": "example-product",
+            "runtime": "example-runtime",
         },
     )
 
@@ -810,8 +861,8 @@ async def test_runtime_verifies_provider_credentials_without_echoing_secret(
             {
                 "schema_version": 1,
                 "trusted_gateway": {
-                    "project_id": "linghui-ai-suite",
-                    "runtime": "linghui-dashboard-agent",
+                    "project_id": "example-product",
+                    "runtime": "example-runtime",
                 },
             }
         ),
@@ -831,8 +882,8 @@ async def test_runtime_verifies_provider_credentials_without_echoing_secret(
                 "source": "byok",
             },
             "control": "verify_provider_credential",
-            "project_id": "linghui-ai-suite",
-            "runtime": "linghui-dashboard-agent",
+            "project_id": "example-product",
+            "runtime": "example-runtime",
         },
     )
 
@@ -857,8 +908,8 @@ async def test_runtime_resolves_model_profiles_for_the_trusted_gateway(
             {
                 "schema_version": 1,
                 "trusted_gateway": {
-                    "project_id": "linghui-ai-suite",
-                    "runtime": "linghui-dashboard-agent",
+                    "project_id": "example-product",
+                    "runtime": "example-runtime",
                 },
             }
         ),
@@ -874,8 +925,8 @@ async def test_runtime_resolves_model_profiles_for_the_trusted_gateway(
         metadata={
             "control": "resolve_model_profile",
             "model_profile_id": "glm-5.3-flash",
-            "project_id": "linghui-ai-suite",
-            "runtime": "linghui-dashboard-agent",
+            "project_id": "example-product",
+            "runtime": "example-runtime",
         },
     )
 
@@ -922,8 +973,9 @@ async def test_runtime_applies_steer_before_the_next_model_step(tmp_path: Path) 
     )
     agent = AgentLoop(bus=bus, provider=provider, workspace=tmp_path)
     execution_key = "web:run-123"
-    agent._steer_queues[execution_key] = asyncio.Queue()
-    agent._steer_queues[execution_key].put_nowait(
+    session = agent.sessions.get_or_create("web:conversation-456")
+    agent.steering.queues[execution_key] = asyncio.Queue()
+    agent.steering.queues[execution_key].put_nowait(
         InboundMessage(
             channel="web",
             sender_id="chat-run-123",
@@ -938,6 +990,7 @@ async def test_runtime_applies_steer_before_the_next_model_step(tmp_path: Path) 
     result = await agent._run_agent_loop(
         [{"role": "user", "content": "分析全年趋势"}],
         execution_key=execution_key,
+        session=session,
     )
 
     assert result.content == "Updated answer for the latest three months."
@@ -951,12 +1004,74 @@ async def test_runtime_applies_steer_before_the_next_model_step(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+async def test_runtime_rejects_steer_when_it_cannot_persist_application(tmp_path: Path) -> None:
+    bus = MessageBus()
+    agent = AgentLoop(bus=bus, provider=_SequenceProvider([]), workspace=tmp_path)
+    execution_key = "web:run-123"
+    agent.steering.queues[execution_key] = asyncio.Queue()
+    agent.steering.queues[execution_key].put_nowait(
+        InboundMessage(
+            channel="web",
+            sender_id="chat-run-123",
+            chat_id="chat-run-123",
+            content="只看最近三个月",
+            run_id="run-123",
+            conversation_id="conversation-456",
+            metadata={"control": "steer", "steer_id": "steer-unpersisted"},
+        )
+    )
+
+    updated = await agent.steering.apply_pending(
+        execution_key,
+        [{"role": "user", "content": "分析全年趋势"}],
+        session=None,
+        parent_uuid="request-1",
+    )
+
+    assert updated == [{"role": "user", "content": "分析全年趋势"}]
+    acknowledgement = await bus.consume_outbound()
+    assert acknowledgement.metadata["control"] == "steer_rejected"
+
+
+@pytest.mark.asyncio
+async def test_pending_steer_identity_is_scoped_to_session_and_run(tmp_path: Path) -> None:
+    bus = MessageBus()
+    agent = AgentLoop(bus=bus, provider=_SequenceProvider([]), workspace=tmp_path)
+
+    first = InboundMessage(
+        channel="web",
+        sender_id="chat-run-1",
+        chat_id="chat-run-1",
+        content="first",
+        run_id="run-1",
+        conversation_id="conversation-1",
+        metadata={"control": "steer", "steer_id": "same-id"},
+    )
+    second = InboundMessage(
+        channel="web",
+        sender_id="chat-run-2",
+        chat_id="chat-run-2",
+        content="second",
+        run_id="run-2",
+        conversation_id="conversation-2",
+        metadata={"control": "steer", "steer_id": "same-id"},
+    )
+
+    await agent.steering.handle_control(first, run_active=True)
+    await agent.steering.handle_control(second, run_active=True)
+
+    assert agent.steering.queues[first.execution_key].qsize() == 1
+    assert agent.steering.queues[second.execution_key].qsize() == 1
+    assert bus.outbound.empty()
+
+
+@pytest.mark.asyncio
 async def test_runtime_persists_steer_id_before_acknowledging_it(tmp_path: Path) -> None:
     bus = MessageBus()
     agent = AgentLoop(bus=bus, provider=_SequenceProvider([]), workspace=tmp_path)
     execution_key = "web:run-123"
     session = agent.sessions.get_or_create("web:conversation-456")
-    agent._steer_queues[execution_key] = asyncio.Queue()
+    agent.steering.queues[execution_key] = asyncio.Queue()
     steer = InboundMessage(
         channel="web",
         sender_id="chat-run-123",
@@ -966,9 +1081,9 @@ async def test_runtime_persists_steer_id_before_acknowledging_it(tmp_path: Path)
         conversation_id="conversation-456",
         metadata={"control": "steer", "steer_id": "steer-durable"},
     )
-    agent._steer_queues[execution_key].put_nowait(steer)
+    agent.steering.queues[execution_key].put_nowait(steer)
 
-    updated = await agent._apply_pending_steers(
+    updated = await agent.steering.apply_pending(
         execution_key,
         [{"role": "user", "content": "分析全年趋势"}],
         session=session,
@@ -980,7 +1095,17 @@ async def test_runtime_persists_steer_id_before_acknowledging_it(tmp_path: Path)
     assert persisted is not None
     assert "steer-durable" in persisted.metadata["applied_steer_ids"]
     assert any(event.get("steer_id") == "steer-durable" for event in persisted.events)
-    assert agent._steer_was_applied(steer) is True
+    assert agent.steering.was_applied(steer) is True
+    same_id_other_run = InboundMessage(
+        channel=steer.channel,
+        sender_id="chat-run-999",
+        chat_id="chat-run-999",
+        content="other run",
+        run_id="run-999",
+        conversation_id=steer.conversation_id,
+        metadata={"control": "steer", "steer_id": "steer-durable"},
+    )
+    assert agent.steering.was_applied(same_id_other_run) is False
     acknowledgement = await bus.consume_outbound()
     assert acknowledgement.metadata["control"] == "steer_applied"
 
@@ -988,7 +1113,9 @@ async def test_runtime_persists_steer_id_before_acknowledging_it(tmp_path: Path)
 @pytest.mark.asyncio
 async def test_trusted_read_file_returns_audited_content_and_rejects_unapproved_paths(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("ANALYST_RUNTIME_UPLOAD_MANIFEST_SCHEMA", "example-upload/v1")
     upload = tmp_path / "uploads" / "user" / "conversation" / "version"
     upload.mkdir(parents=True)
     uploaded_file = upload / "record.txt"
@@ -1002,7 +1129,7 @@ async def test_trusted_read_file_returns_audited_content_and_rejects_unapproved_
                 "content_sha256": content_hash,
                 "conversation_id": "conversation",
                 "created_at": "2026-09-02T08:00:00.000Z",
-                "schema_version": "linghui-workspace-upload/v1",
+                "schema_version": "example-upload/v1",
                 "user_id": "user",
                 "version": "version",
                 "workspace_path": str(uploaded_file),
@@ -1080,7 +1207,7 @@ async def test_trusted_agent_can_choose_read_file_and_answer_from_uploaded_conte
                 "content_sha256": content_hash,
                 "conversation_id": "conversation",
                 "created_at": "2026-09-02T08:00:00.000Z",
-                "schema_version": "linghui-workspace-upload/v1",
+                "schema_version": "analyst-runtime-workspace-upload/v1",
                 "user_id": "user",
                 "version": "version",
                 "workspace_path": str(uploaded_file),

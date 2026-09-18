@@ -1,7 +1,8 @@
 [project]
 name = "analyst-runtime"
-version = "0.1.4"
-description = "Private product-neutral agent execution runtime"
+version = "0.2.0"
+description = "Product-neutral runtime for tool-using AI agents"
+readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
@@ -57,6 +58,11 @@ dev = [
     "pytest-timeout>=2.0.0,<3.0.0",
     "ruff>=0.1.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/seletatech/analyst-runtime"
+Repository = "https://github.com/seletatech/analyst-runtime"
+Issues = "https://github.com/seletatech/analyst-runtime/issues"
 
 [project.scripts]
 analyst-runtime = "analyst_runtime.cli.commands:app"

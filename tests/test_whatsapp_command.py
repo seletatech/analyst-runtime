@@ -9,16 +9,14 @@ Covers:
 """
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from analyst_runtime.bus.events import InboundMessage
 from analyst_runtime.bus.queue import MessageBus
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -36,8 +34,8 @@ def _make_inbound(content: str) -> InboundMessage:
 def _make_agent(workspace: Path):
     """Create a minimal AgentLoop with a fake provider."""
     from unittest.mock import MagicMock
+
     from analyst_runtime.agent.loop import AgentLoop
-    from analyst_runtime.bus.queue import MessageBus
 
     bus = MessageBus()
     provider = MagicMock()
@@ -66,7 +64,6 @@ def _make_channel_manager_without_whatsapp():
 def _make_channel_manager_with_connected_whatsapp():
     """ChannelManager stub where WhatsApp is already running."""
     from analyst_runtime.channels.whatsapp import WhatsAppChannel
-    from analyst_runtime.config.schema import WhatsAppConfig
 
     wa = MagicMock(spec=WhatsAppChannel)
     wa.is_running = True
@@ -106,10 +103,10 @@ async def test_whatsapp_stale_connected_status_starts_bridge(tmp_path: Path) -> 
 
     with patch("analyst_runtime.utils.helpers.get_data_path", return_value=tmp_path / ".analyst-runtime"):
         # Patch WhatsAppChannel so we control start_bridge
-        with patch("analyst_runtime.channels.whatsapp.WhatsAppChannel") as MockWA:
+        with patch("analyst_runtime.channels.whatsapp.WhatsAppChannel") as mock_wa:
             instance = MagicMock()
             instance.start_bridge = fake_start_bridge
-            MockWA.return_value = instance
+            mock_wa.return_value = instance
 
             result = await agent._process_message(_make_inbound("/whatsapp"))
 
@@ -137,10 +134,10 @@ async def test_whatsapp_stale_qr_pending_status_restarts_bridge(tmp_path: Path) 
         return True
 
     with patch("analyst_runtime.utils.helpers.get_data_path", return_value=tmp_path / ".analyst-runtime"):
-        with patch("analyst_runtime.channels.whatsapp.WhatsAppChannel") as MockWA:
+        with patch("analyst_runtime.channels.whatsapp.WhatsAppChannel") as mock_wa:
             instance = MagicMock()
             instance.start_bridge = fake_start_bridge
-            MockWA.return_value = instance
+            mock_wa.return_value = instance
 
             result = await agent._process_message(_make_inbound("/whatsapp"))
 
@@ -180,10 +177,10 @@ async def test_whatsapp_no_status_file_starts_bridge(tmp_path: Path) -> None:
         return True
 
     with patch("analyst_runtime.utils.helpers.get_data_path", return_value=tmp_path / ".analyst-runtime"):
-        with patch("analyst_runtime.channels.whatsapp.WhatsAppChannel") as MockWA:
+        with patch("analyst_runtime.channels.whatsapp.WhatsAppChannel") as mock_wa:
             instance = MagicMock()
             instance.start_bridge = fake_start_bridge
-            MockWA.return_value = instance
+            mock_wa.return_value = instance
 
             result = await agent._process_message(_make_inbound("/whatsapp"))
 
@@ -204,7 +201,6 @@ async def test_self_only_message_reaches_bus(tmp_path: Path) -> None:
     The fix: WhatsApp self-only mode must bypass is_allowed() (or ensure the
     sender is added to the allow list before _handle_message is called).
     """
-    from analyst_runtime.bus.queue import MessageBus
     from analyst_runtime.channels.whatsapp import WhatsAppChannel
     from analyst_runtime.config.schema import WhatsAppConfig
 
@@ -252,7 +248,6 @@ async def test_self_only_message_with_lid_reaches_bus(tmp_path: Path) -> None:
     Python picked sender_id from the LID (pn field) but own_phone comes from
     own_jid which is always phone-format — so the comparison always failed.
     """
-    from analyst_runtime.bus.queue import MessageBus
     from analyst_runtime.channels.whatsapp import WhatsAppChannel
     from analyst_runtime.config.schema import WhatsAppConfig
 
@@ -298,7 +293,6 @@ async def test_self_only_subsequent_messages_not_blocked(tmp_path: Path) -> None
     non-empty allow_from, skipped the self-only JID check, entered the allow_from
     branch, hit _is_sender_authorized (which requires gateway auth), and was dropped.
     """
-    from analyst_runtime.bus.queue import MessageBus
     from analyst_runtime.channels.whatsapp import WhatsAppChannel
     from analyst_runtime.config.schema import WhatsAppConfig
 
@@ -345,7 +339,6 @@ async def test_self_only_subsequent_messages_not_blocked(tmp_path: Path) -> None
 @pytest.mark.asyncio
 async def test_non_self_message_blocked_in_self_only_mode(tmp_path: Path) -> None:
     """A message from a different phone is blocked in self-only mode."""
-    from analyst_runtime.bus.queue import MessageBus
     from analyst_runtime.channels.whatsapp import WhatsAppChannel
     from analyst_runtime.config.schema import WhatsAppConfig
 

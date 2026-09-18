@@ -11,7 +11,6 @@ import pytest
 from analyst_runtime.agent.tools.base import Tool
 from analyst_runtime.agent.tools.registry import ToolRegistry
 
-
 # ---------------------------------------------------------------------------
 # Test fixtures
 # ---------------------------------------------------------------------------
@@ -132,7 +131,6 @@ async def test_execute_success_returns_tool_result() -> None:
 
 @pytest.mark.asyncio
 async def test_execute_exception_masks_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
-    import os
     monkeypatch.setenv("MY_SECRET_KEY", "secret_value_1234567890abcd")
 
     registry = ToolRegistry()

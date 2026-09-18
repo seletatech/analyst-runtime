@@ -16,7 +16,6 @@ import pytest
 
 import analyst_runtime.cli.commands as commands
 
-
 # ---------------------------------------------------------------------------
 # Helpers — fake httpx.Client for sync requests
 # ---------------------------------------------------------------------------

@@ -3,7 +3,8 @@ Provider Registry — single source of truth for LLM provider metadata.
 
 Adding a new provider:
   1. Add a ProviderSpec to PROVIDERS below.
-  2. Done. Config fields, env vars, prefixing, matching, and status derive from here.
+  2. If it serves a trusted product profile, add that route to MODEL_PROFILES below.
+  3. Done. Config fields, env vars, routing, matching, and status derive from here.
 
 Order matters — it controls match priority and fallback. Gateways first.
 Every entry writes out all fields so you can copy-paste as a template.
@@ -11,6 +12,7 @@ Every entry writes out all fields so you can copy-paste as a template.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -83,6 +85,71 @@ class ProviderSpec:
     def request_base_env_names(self) -> tuple[str, ...]:
         """Return endpoint overrides safe for request-scoped credentials."""
         return self.request_api_base_env or self.api_base_env
+
+
+@dataclass(frozen=True)
+class ModelProfile:
+    """One stable product model choice resolved to a Runtime provider route."""
+
+    id: str
+    provider: str
+    model: str
+
+
+@dataclass(frozen=True)
+class ModelProfileSpec:
+    """Declarative provider routes for one trusted product model profile."""
+
+    id: str
+    label: str
+    provider_env: str
+    default_provider: str
+    routes: tuple[tuple[str, str], ...]
+    aliases: tuple[str, ...] = ()
+
+    def resolve(self) -> ModelProfile:
+        provider = os.environ.get(self.provider_env, self.default_provider).strip().lower()
+        try:
+            model = dict(self.routes)[provider]
+        except KeyError as error:
+            raise ValueError(f"Unsupported {self.label} provider: {provider!r}") from error
+        return ModelProfile(id=self.id, provider=provider, model=model)
+
+
+MODEL_PROFILES: tuple[ModelProfileSpec, ...] = (
+    ModelProfileSpec(
+        id="deepseek-v4-flash-0731",
+        label="DeepSeek-V4-Flash",
+        provider_env="DEEPSEEK_V4_FLASH_PROVIDER",
+        default_provider="nebius",
+        routes=(
+            ("deepseek", "deepseek-v4-flash"),
+            ("nebius", "deepseek-ai/DeepSeek-V4-Flash-0731"),
+            ("nvidia", "deepseek-ai/deepseek-v4-flash-0731"),
+        ),
+        aliases=("deepseek-chat",),
+    ),
+    ModelProfileSpec(
+        id="glm-5.3-flash",
+        label="GLM-5.3-Flash",
+        provider_env="GLM_5_3_FLASH_PROVIDER",
+        default_provider="nebius",
+        routes=(
+            ("nebius", "zai-org/GLM-5.3-Flash"),
+            ("openrouter", "openrouter/z-ai/glm-5.3-flash"),
+            ("tokenhub", "tokenhub/glm-5.3-flash"),
+            ("zhipu", "glm-5.3-flash"),
+        ),
+    ),
+)
+
+
+def resolve_model_profile(profile_id: str) -> ModelProfile:
+    """Resolve a trusted profile exclusively from the Runtime provider catalog."""
+    for profile in MODEL_PROFILES:
+        if profile.id == profile_id or profile_id in profile.aliases:
+            return profile.resolve()
+    raise ValueError(f"Unsupported Analyst Runtime model profile: {profile_id!r}")
 
 
 # ---------------------------------------------------------------------------

@@ -14,13 +14,9 @@ full result archived to disk.
 """
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
-import pytest
-
 from analyst_runtime.agent.loop import AgentLoop
-
 
 # ---------------------------------------------------------------------------
 # Helpers

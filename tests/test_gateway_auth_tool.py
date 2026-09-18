@@ -5,8 +5,7 @@ from typing import Any
 
 import pytest
 
-from analyst_runtime.agent.tools import gateway_auth
-from analyst_runtime.agent.tools import firecrawl
+from analyst_runtime.agent.tools import firecrawl, gateway_auth
 
 
 def test_gateway_client_does_not_inherit_desktop_proxy_settings(

@@ -37,7 +37,7 @@ async def test_web_channel_separates_execution_from_conversation_identity() -> N
             "run_id": "run-123",
             "conversation_id": "conversation-456",
             "content": "继续分析上一轮问题",
-            "metadata": {"runtime": "linghui-dashboard-agent"},
+            "metadata": {"runtime": "example-runtime"},
         }
     )
 
@@ -109,6 +109,7 @@ async def test_web_channel_routes_output_and_attachments_by_run_id(
             conversation_id="conversation-456",
             media=[str(attachment)],
             run_id="run-123",
+            event_id="event-final-123",
         )
     )
 
@@ -121,6 +122,34 @@ async def test_web_channel_routes_output_and_attachments_by_run_id(
     assert outbound_request["json"]["session_id"] == "chat-run-123"
     assert outbound_request["json"]["run_id"] == "run-123"
     assert outbound_request["json"]["conversation_id"] == "conversation-456"
+    assert outbound_request["json"]["event_id"] == "event-final-123"
+
+
+@pytest.mark.asyncio
+async def test_web_channel_deduplicates_a_redelivered_stable_request() -> None:
+    bus = MagicMock()
+    bus.publish_inbound = AsyncMock()
+    channel = WebChannel(
+        MagicMock(
+            allow_from=["*"],
+            sandbox_id="test-sandbox",
+            gateway_url="http://gateway",
+        ),
+        bus,
+    )
+    payload = {
+        "type": "user_message",
+        "request_id": "run:run-123",
+        "session_id": "chat-run-123",
+        "run_id": "run-123",
+        "conversation_id": "conversation-456",
+        "content": "检查设备",
+    }
+
+    await channel._process_inbound(payload)
+    await channel._process_inbound(payload)
+
+    bus.publish_inbound.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -137,7 +166,7 @@ async def test_web_channel_publishes_cancel_control_to_the_agent_bus() -> None:
             "type": "cancel_request",
             "session_id": "chat-run-123",
             "content": "",
-            "metadata": {"runtime": "linghui-dashboard-agent"},
+            "metadata": {"runtime": "example-runtime"},
         }
     )
 
@@ -163,7 +192,7 @@ async def test_web_channel_publishes_steer_control_to_the_same_run() -> None:
             "conversation_id": "conversation-456",
             "content": "只看最近三个月",
             "metadata": {
-                "runtime": "linghui-dashboard-agent",
+                "runtime": "example-runtime",
                 "steer_id": "steer-789",
             },
         }
@@ -254,7 +283,7 @@ async def test_runtime_reports_duplicate_and_status_lookups_as_pending_once(
 
         duplicate = await asyncio.wait_for(bus.consume_outbound(), timeout=0.5)
         assert duplicate.metadata["control"] == "steer_pending"
-        assert agent._steer_queues[steer.execution_key].qsize() == 1
+        assert agent.steering.queues[steer.execution_key].qsize() == 1
 
         await bus.publish_inbound(
             InboundMessage(
@@ -296,7 +325,7 @@ async def test_web_channel_routes_credential_verification_to_runtime() -> None:
                     "provider": "zhipu",
                     "source": "byok",
                 },
-                "runtime": "linghui-dashboard-agent",
+                "runtime": "example-runtime",
             },
         }
     )
@@ -322,7 +351,7 @@ async def test_web_channel_routes_model_profile_resolution_to_runtime() -> None:
             "content": "",
             "metadata": {
                 "model_profile_id": "glm-5.3-flash",
-                "runtime": "linghui-dashboard-agent",
+                "runtime": "example-runtime",
             },
         }
     )

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from pathlib import Path
@@ -186,7 +187,11 @@ class ReadFileTool(Tool):
             or manifest.get("user_id") != relative_parts[1]
             or conversation_id != relative_parts[2]
             or manifest.get("version") != relative_parts[3]
-            or manifest.get("schema_version") != "linghui-workspace-upload/v1"
+            or manifest.get("schema_version")
+            != os.environ.get(
+                "ANALYST_RUNTIME_UPLOAD_MANIFEST_SCHEMA",
+                "analyst-runtime-workspace-upload/v1",
+            )
             or manifest.get("workspace_path") != str(file_path)
             or manifest.get("content_sha256") != digest
         ):
