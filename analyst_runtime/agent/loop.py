@@ -376,6 +376,13 @@ class AgentLoop:
         self.compress_keep_turns = compress_keep_turns
         self.consolidation_interval = consolidation_interval
         self.consolidation_model = consolidation_model
+        self.enable_memory_consolidation = (
+            tool_profile != "trusted-analysis"
+            or os.environ.get("ANALYST_RUNTIME_ENABLE_MEMORY_CONSOLIDATION", "")
+            .strip()
+            .lower()
+            in {"1", "true", "yes", "on"}
+        )
         self.max_concurrent_messages = max(1, max_concurrent_messages)
         self.context_compact_threshold = max(1, context_compact_threshold)
         self.context_compact_keep_messages = max(1, context_compact_keep_messages)
@@ -1792,6 +1799,17 @@ class AgentLoop:
                             "finish_reason": response.finish_reason,
                         }
                     )
+                if (
+                    self.enable_memory_consolidation
+                    and session
+                    and len(session.get_consolidation_events()) > self.memory_window
+                ):
+                    await self._consolidate_memory(
+                        session,
+                        model=active_model,
+                        telemetry=model_telemetry,
+                        request_uuid=request_uuid,
+                    )
                 break
 
         return AgentLoopResult(
@@ -2226,14 +2244,6 @@ class AgentLoop:
                 session.metadata["model"] = model_id
             self.sessions.save(session)
             return None  # TelegramChannel already confirmed via edit_message_text
-
-        # The production trusted-analysis profile must not launch model calls
-        # outside the request telemetry returned to the Web usage ledger.
-        if (
-            self.tool_profile != "trusted-analysis"
-            and len(session.get_consolidation_events()) > self.memory_window
-        ):
-            self._track_task(self._consolidate_memory(session))
 
         request_uuid = str(uuid.uuid4())
         self._set_tool_context(
@@ -2676,7 +2686,15 @@ class AgentLoop:
             channel=origin_channel, chat_id=origin_chat_id, content=final_content
         )
 
-    async def _consolidate_memory(self, session, archive_all: bool = False) -> None:
+    async def _consolidate_memory(
+        self,
+        session,
+        archive_all: bool = False,
+        *,
+        model: str | None = None,
+        telemetry: RunModelTelemetry | None = None,
+        request_uuid: str | None = None,
+    ) -> None:
         """Consolidate old messages into MEMORY.md + HISTORY.md.
 
         Args:
@@ -2684,9 +2702,23 @@ class AgentLoop:
                        If False, only write to files without modifying session.
         """
         async with self._consolidation_lock:
-            await self._consolidate_memory_inner(session, archive_all)
+            await self._consolidate_memory_inner(
+                session,
+                archive_all,
+                model=model,
+                telemetry=telemetry,
+                request_uuid=request_uuid,
+            )
 
-    async def _consolidate_memory_inner(self, session, archive_all: bool = False) -> None:
+    async def _consolidate_memory_inner(
+        self,
+        session,
+        archive_all: bool = False,
+        *,
+        model: str | None = None,
+        telemetry: RunModelTelemetry | None = None,
+        request_uuid: str | None = None,
+    ) -> None:
         """Inner consolidation logic, must be called under _consolidation_lock."""
         memory = self.context.memory
         consolidation_events = session.get_consolidation_events()
@@ -2762,6 +2794,7 @@ class AgentLoop:
 Respond with ONLY valid JSON, no markdown fences."""
 
         try:
+            consolidation_model = self.consolidation_model or model or self.model
             response = await self.provider.chat(
                 messages=[
                     {
@@ -2770,8 +2803,22 @@ Respond with ONLY valid JSON, no markdown fences."""
                     },
                     {"role": "user", "content": prompt},
                 ],
-                model=self.consolidation_model or self.model,
+                model=consolidation_model,
             )
+            if telemetry is not None:
+                telemetry.record(response)
+            if request_uuid:
+                session.add_event(
+                    {
+                        "uuid": str(uuid.uuid4()),
+                        "parent_uuid": request_uuid,
+                        "type": "model_call",
+                        "model": consolidation_model,
+                        "maintenance": "memory_consolidation",
+                        "usage": response.usage,
+                        "provider_retry_count": response.retry_count,
+                    }
+                )
             text = (response.content or "").strip()
             if not text:
                 logger.warning("Memory consolidation: LLM returned empty response, skipping")

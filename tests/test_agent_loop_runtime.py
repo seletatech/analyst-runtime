@@ -1987,6 +1987,46 @@ async def test_trusted_analysis_does_not_launch_unmetered_model_maintenance(
 
 
 @pytest.mark.asyncio
+async def test_trusted_analysis_consolidation_is_accounted_when_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANALYST_RUNTIME_ENABLE_MEMORY_CONSOLIDATION", "true")
+    provider = _SequenceProvider(
+        [
+            LLMResponse(content="finished", finish_reason="stop"),
+            LLMResponse(
+                content=json.dumps(
+                    {"history_entry": "[2026-09-19 00:00] remembered", "memory_update": ""}
+                ),
+                finish_reason="stop",
+                usage={"prompt_tokens": 3, "completion_tokens": 2},
+            ),
+        ]
+    )
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=provider,
+        workspace=tmp_path,
+        tool_profile="trusted-analysis",
+        memory_window=1,
+        consolidation_interval=0,
+    )
+    session = agent.sessions.get_or_create("web:metered-chat")
+    session.add_event({"content": "old question", "type": "user_input", "uuid": "old-user"})
+    session.add_event(
+        {"content": "old answer", "type": "final_response", "uuid": "old-answer"}
+    )
+
+    response = await agent._process_message(_message("metered-chat"))
+
+    assert response is not None
+    assert len(provider.calls) == 2
+    assert response.metadata["usage"]["model_call_count"] == 2
+    assert response.metadata["usage"]["prompt_tokens"] == 3
+    assert "memory_consolidation" in str(session.events)
+
+
+@pytest.mark.asyncio
 async def test_trusted_analysis_new_session_does_not_call_consolidation_model(
     tmp_path: Path,
 ) -> None:
