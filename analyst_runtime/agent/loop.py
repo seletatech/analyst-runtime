@@ -306,7 +306,7 @@ class AgentLoop:
         max_iterations: int = 500,
         temperature: float = 0.7,
         max_tokens: int = 4096,
-        memory_window: int = 50,
+        memory_window: int = 20,
         brave_api_key: str | None = None,
         exec_config: ExecToolConfig | None = None,
         cron_service: CronService | None = None,
