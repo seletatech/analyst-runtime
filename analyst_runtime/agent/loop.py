@@ -20,6 +20,7 @@ from analyst_runtime.agent.analysis_context import (
     AnalysisArtifactStore,
 )
 from analyst_runtime.agent.context import ContextBuilder
+from analyst_runtime.agent.evidence_refs import collect_evidence_refs
 from analyst_runtime.agent.memory import ProtectedMemorySection
 from analyst_runtime.agent.routing import RoutingError, RuntimeRequestRouter
 from analyst_runtime.agent.steering import SteeringCoordinator
@@ -2566,6 +2567,9 @@ class AgentLoop:
             "model_provider": trusted_profile.provider if trusted_profile else "unavailable",
         }
         outbound_metadata["trace_summary"] = self._trace_summary(session.events[turn_event_start:])
+        outbound_metadata["evidence_refs"] = collect_evidence_refs(
+            session.events[turn_event_start:], self.workspace, final_content
+        )
         if terminal_error_code:
             outbound_metadata["error_code"] = terminal_error_code
         if msg.channel == "telegram":
