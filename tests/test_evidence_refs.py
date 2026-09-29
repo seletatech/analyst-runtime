@@ -2,6 +2,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from analyst_runtime.agent.analysis_context import AnalysisArtifactStore
 from analyst_runtime.agent.evidence_refs import collect_evidence_refs
 
 
@@ -42,3 +43,26 @@ def test_only_successful_existing_data_files_are_reported(tmp_path: Path) -> Non
         {"kind": "excel", "path": str(book.relative_to(tmp_path))},
     ]
     assert collect_evidence_refs([], tmp_path, f"[打开](/data?path={stale.relative_to(tmp_path)})") == []
+
+
+def test_exec_reports_only_explicit_source_manifest(tmp_path: Path) -> None:
+    page = tmp_path / "data/production-records/2026-01/涂布记录表/page-0001.json"
+    other = page.with_name("page-0002.json")
+    page.parent.mkdir(parents=True)
+    page.write_text("{}")
+    other.write_text("{}")
+    events = [
+        {"type": "tool_result", "status": "completed", "tool_name": "exec", "tool_input": {"command": "print exploratory pages"}, "content": str(other.relative_to(tmp_path))},
+        {"type": "tool_result", "status": "completed", "tool_name": "exec", "tool_input": {"command": "print('EVIDENCE_SOURCE_PATHS_JSON=...')"}, "content": "EVIDENCE_SOURCE_PATHS_JSON=" + json.dumps([str(page.relative_to(tmp_path))])},
+    ]
+    assert collect_evidence_refs(events, tmp_path) == [
+        {"kind": "ocr", "path": str(page.relative_to(tmp_path))}
+    ]
+    analysis_id = AnalysisArtifactStore(tmp_path).save_completed_answer(
+        question="配胶日", answer="已完成", data_manifest_sha256="data",
+        confirmed_semantics_sha256="semantics", tools_used=["exec"],
+        evidence=[{"tool_name": "exec"}], source_paths=[str(page.relative_to(tmp_path))],
+    )
+    assert collect_evidence_refs([], tmp_path, analysis_id=analysis_id) == [
+        {"kind": "ocr", "path": str(page.relative_to(tmp_path))}
+    ]

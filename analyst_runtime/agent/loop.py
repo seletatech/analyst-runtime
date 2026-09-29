@@ -2488,6 +2488,7 @@ class AgentLoop:
             logger.info(f"Response to {msg.channel}:{msg.sender_id}: {preview}")
 
         turn_events = session.events[turn_event_start:]
+        evidence_refs = collect_evidence_refs(turn_events, self.workspace, final_content)
         tool_events = [event for event in turn_events if event.get("type") == "tool_result"]
         current_analysis_id = session.metadata.get("active_analysis_id")
         if (
@@ -2519,6 +2520,7 @@ class AgentLoop:
                     }
                     for event in tool_events
                 ],
+                source_paths=[ref["path"] for ref in evidence_refs],
             )
             session.metadata["active_analysis_id"] = analysis_id
             answer_artifacts = session.metadata.get("answer_artifacts")
@@ -2567,9 +2569,11 @@ class AgentLoop:
             "model_provider": trusted_profile.provider if trusted_profile else "unavailable",
         }
         outbound_metadata["trace_summary"] = self._trace_summary(session.events[turn_event_start:])
-        outbound_metadata["evidence_refs"] = collect_evidence_refs(
-            session.events[turn_event_start:], self.workspace, final_content
-        )
+        if reuse_requested and isinstance(active_analysis_id, str):
+            evidence_refs = collect_evidence_refs(
+                turn_events, self.workspace, final_content, active_analysis_id
+            )
+        outbound_metadata["evidence_refs"] = evidence_refs
         if terminal_error_code:
             outbound_metadata["error_code"] = terminal_error_code
         if msg.channel == "telegram":

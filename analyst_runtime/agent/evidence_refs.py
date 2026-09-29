@@ -1,8 +1,10 @@
-"""Small, validated file references from one turn's successful tool results."""
+"""Small, validated file references from successful tool results."""
 
+import json
 import re
 from pathlib import Path
 from typing import Any
+
 from analyst_runtime.agent.analysis_context import AnalysisArtifactError, AnalysisArtifactStore
 
 OCR_PATH = re.compile(
@@ -11,7 +13,7 @@ OCR_PATH = re.compile(
 EXCEL_PATH = re.compile(r"data/[^\n\r\"'<>|`]+?\.xlsx?\b", re.IGNORECASE)
 
 
-def collect_evidence_refs(events: list[dict[str, Any]], workspace: Path, answer: str = "") -> list[dict[str, str]]:
+def collect_evidence_refs(events: list[dict[str, Any]], workspace: Path, answer: str = "", analysis_id: str | None = None) -> list[dict[str, str]]:
     data_root = (workspace / "data").resolve()
     found: dict[str, dict[str, str]] = {}
     artifacts = AnalysisArtifactStore(workspace)
@@ -31,6 +33,9 @@ def collect_evidence_refs(events: list[dict[str, Any]], workspace: Path, answer:
             return
         coverage = artifact.get("source_coverage")
         if isinstance(coverage, dict):
+            for path in coverage.get("files", []):
+                if isinstance(path, str):
+                    add(path)
             for item in coverage.get("workbooks", []):
                 if isinstance(item, dict) and isinstance(item.get("path"), str):
                     path = item["path"]
@@ -52,8 +57,22 @@ def collect_evidence_refs(events: list[dict[str, Any]], workspace: Path, answer:
             pointer = str(event.get("content") or "")
             if pointer.startswith("analysis_id="):
                 add_artifact(pointer.removeprefix("analysis_id="))
+            # ponytail: exec output is capped at 16 KB; use a file manifest if one analysis exceeds it.
+            for line in pointer.splitlines():
+                if not line.startswith("EVIDENCE_SOURCE_PATHS_JSON="):
+                    continue
+                try:
+                    paths = json.loads(line.removeprefix("EVIDENCE_SOURCE_PATHS_JSON="))
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(paths, list):
+                    for path in paths:
+                        if isinstance(path, str):
+                            add(path)
     # A cited, content-verified artifact can be reused without a tool call this turn.
     # ponytail: only recorded reads and artifact coverage are attributable; script-internal reads need a source manifest.
-    for analysis_id in re.findall(r"analysis_id[^\n]{0,32}?([a-z][a-z0-9-]*:[0-9a-f]{64})", answer):
+    for cited_id in re.findall(r"analysis_id[^\n]{0,32}?([a-z][a-z0-9-]*:[0-9a-f]{64})", answer):
+        add_artifact(cited_id)
+    if analysis_id:
         add_artifact(analysis_id)
     return list(found.values())
