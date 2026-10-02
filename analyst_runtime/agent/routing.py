@@ -81,7 +81,7 @@ class RuntimeRequestRouter:
     ) -> OutboundMessage | None:
         control = msg.metadata.get("control")
         if control == "verify_provider_credential":
-            verified = False
+            verified = None
             if credential is not None:
                 api_key = credential.get("api_key")
                 provider_name = credential.get("provider")

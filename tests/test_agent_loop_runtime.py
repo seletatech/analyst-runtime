@@ -899,8 +899,11 @@ async def test_runtime_uses_the_profile_deployment_provider_for_one_run(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("verdict", [True, False, None])
 async def test_runtime_verifies_provider_credentials_without_echoing_secret(
     tmp_path: Path,
+    monkeypatch,
+    verdict: bool | None,
 ) -> None:
     (tmp_path / "workspace.json").write_text(
         json.dumps(
@@ -915,6 +918,13 @@ async def test_runtime_verifies_provider_credentials_without_echoing_secret(
         encoding="utf-8",
     )
     provider = _SequenceProvider([])
+
+    async def verify_credentials(*, api_key, provider):
+        provider_instance.verified_credentials.append((api_key, provider))
+        return verdict
+
+    provider_instance = provider
+    monkeypatch.setattr(provider, "verify_request_credentials", verify_credentials)
     agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path)
     message = InboundMessage(
         channel="web",
@@ -939,7 +949,7 @@ async def test_runtime_verifies_provider_credentials_without_echoing_secret(
     assert response is not None
     assert response.metadata == {
         "control": "provider_credential_verified",
-        "verified": True,
+        "verified": verdict,
     }
     assert "valid-key" not in json.dumps(response.metadata)
 

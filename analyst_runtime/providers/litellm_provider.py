@@ -115,14 +115,14 @@ class LiteLLMProvider(LLMProvider):
         if isinstance(token, Token):
             _request_credentials.reset(token)
 
-    async def verify_request_credentials(self, *, api_key: str, provider: str) -> bool:
+    async def verify_request_credentials(self, *, api_key: str, provider: str) -> bool | None:
         """Verify BYOK without moving provider HTTP behavior into the Web or API."""
         spec = find_by_name(provider)
         if spec is None or not spec.accepts_request_credentials:
-            return False
+            return None
         base_url = spec.default_api_base.rstrip("/")
         if not base_url:
-            return False
+            return None
         try:
             async with httpx.AsyncClient(trust_env=False) as client:
                 response = await client.get(
@@ -131,9 +131,11 @@ class LiteLLMProvider(LLMProvider):
                     follow_redirects=False,
                     timeout=10.0,
                 )
-            return response.is_success
+            if response.is_success:
+                return True
+            return False if response.status_code in {401, 403} else None
         except httpx.HTTPError:
-            return False
+            return None
 
     def _resolve_model(self, model: str) -> str:
         """Resolve model name by applying provider/gateway prefixes."""

@@ -62,9 +62,9 @@ class LLMProvider(ABC):
     def reset_request_credentials(self, token: object | None) -> None:
         """Remove credentials installed by ``set_request_credentials``."""
 
-    async def verify_request_credentials(self, *, api_key: str, provider: str) -> bool:
-        """Verify a provider credential inside the Runtime provider boundary."""
-        return False
+    async def verify_request_credentials(self, *, api_key: str, provider: str) -> bool | None:
+        """Return a verification verdict, or None when verification is unavailable."""
+        return None
 
     @abstractmethod
     async def chat(
