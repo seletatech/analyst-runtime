@@ -52,6 +52,44 @@ async def test_web_channel_separates_execution_from_conversation_identity() -> N
 
 
 @pytest.mark.asyncio
+async def test_web_poll_identity_is_stable_until_a_new_channel_instance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    poll_params: list[dict] = []
+    active_channel: WebChannel
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args) -> None:
+            return None
+
+        async def get(self, _url, **kwargs):
+            poll_params.append(kwargs["params"])
+            if len(poll_params) % 2 == 0:
+                active_channel._running = False
+            return MagicMock(status_code=200, json=lambda: {"type": "timeout"})
+
+    monkeypatch.setattr("analyst_runtime.channels.web.httpx.AsyncClient", FakeAsyncClient)
+    for _ in range(2):
+        active_channel = WebChannel(
+            MagicMock(sandbox_id="test-sandbox", gateway_url="http://gateway"), MagicMock()
+        )
+        active_channel._running = True
+        await active_channel._poll_loop()
+
+    first, repeated, fresh, fresh_repeated = poll_params
+    assert first == repeated and fresh == fresh_repeated
+    assert first["runtime_instance_id"] != fresh["runtime_instance_id"]
+    assert len(first["runtime_instance_id"]) == len(fresh["runtime_instance_id"]) == 32
+    assert first["timeout"] == fresh["timeout"] == 30
+
+
+@pytest.mark.asyncio
 async def test_web_channel_routes_output_and_attachments_by_run_id(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -535,7 +573,6 @@ async def test_cancel_preserves_returned_usage_for_reload_without_inventing_pend
         tool_profile="trusted-analysis",
     )
     agent._connect_mcp = AsyncMock()  # type: ignore[method-assign]
-    agent.sessions.save = MagicMock(wraps=agent.sessions.save)  # type: ignore[method-assign]
     message = InboundMessage(
         channel="web",
         sender_id="synthetic-user",
@@ -582,7 +619,6 @@ async def test_cancel_preserves_returned_usage_for_reload_without_inventing_pend
         assert not any(event.get("type") == "final_response" for event in restored.events)
         assert any(event.get("type") == "user_input" for event in restored.events)
         assert any(event.get("type") == "tool_result" for event in restored.events)
-        agent.sessions.save.assert_called_once()
         session_file = next((tmp_path / "sessions").glob("*.jsonl"))
         assert provider.api_key not in session_file.read_text()
     finally:

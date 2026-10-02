@@ -2448,6 +2448,8 @@ class AgentLoop:
 
         with self.request_router.bind_provider(routing):
             try:
+                self._merge_persisted_session_metadata(session)
+                self.sessions.save(session)
                 loop_result = await self._run_agent_loop(
                     initial_messages,
                     on_progress=on_progress or _bus_progress,
@@ -2669,6 +2671,8 @@ class AgentLoop:
         )
 
         try:
+            self._merge_persisted_session_metadata(session)
+            self.sessions.save(session)
             final_content, _ = await self._run_agent_loop(
                 initial_messages,
                 session=session,

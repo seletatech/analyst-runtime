@@ -404,6 +404,66 @@ async def test_trusted_run_model_and_byok_are_request_scoped_and_never_echoed(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("channel", ["web", "system"])
+async def test_pending_model_input_is_visible_to_a_fresh_session_manager(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    channel: str,
+) -> None:
+    monkeypatch.setenv("DEEPSEEK_V4_FLASH_PROVIDER", "deepseek")
+    (tmp_path / "workspace.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "trusted_gateway": {"project_id": "example", "runtime": "example"},
+        })
+    )
+    pending = asyncio.Event()
+    provider = _SequenceProvider([])
+
+    async def pending_chat(**_kwargs: Any) -> LLMResponse:
+        pending.set()
+        await asyncio.Event().wait()
+        raise AssertionError("Synthetic pending provider must be cancelled")
+
+    monkeypatch.setattr(provider, "chat", pending_chat)
+    agent = AgentLoop(
+        bus=MessageBus(), provider=provider, workspace=tmp_path, tool_profile="trusted-analysis"
+    )
+    message = InboundMessage(
+        channel=channel,
+        sender_id="synthetic",
+        chat_id="web:conversation" if channel == "system" else "chat-run",
+        conversation_id="conversation",
+        run_id="run",
+        content="Preserve this synthetic input",
+        metadata={
+            "project_id": "example",
+            "runtime": "example",
+            "model_profile_id": "deepseek-v4-flash-0731",
+            "_provider_credential": {
+                "api_key": "synthetic-byok-secret", "provider": "deepseek", "source": "byok"
+            },
+        },
+    )
+    task = asyncio.create_task(agent._process_message(message))
+    try:
+        await asyncio.wait_for(pending.wait(), timeout=1)
+        assert not task.done()
+        restored = SessionManager(tmp_path).get_or_create("web:conversation")
+        assert [event["type"] for event in restored.events] == ["user_input", "prompt_snapshot"]
+        assert "Preserve this synthetic input" in restored.events[0]["content"]
+        assert restored.events[1]["parent_uuid"] == restored.events[0]["uuid"]
+        assert "_provider_credential" not in message.metadata
+        assert "synthetic-byok-secret" not in "".join(
+            path.read_text() for path in (tmp_path / "sessions").glob("*.jsonl")
+        )
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
 async def test_runtime_returns_sanitized_trace_and_workspace_provenance(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
