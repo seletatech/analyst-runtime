@@ -17,8 +17,7 @@ from typing import Any
 
 from loguru import logger
 
-from analyst_runtime.agent.memory import _fsync_directory
-from analyst_runtime.utils.helpers import ensure_dir, safe_filename
+from analyst_runtime.utils.helpers import ensure_dir, fsync_directory, safe_filename
 from analyst_runtime.utils.tool_calls import sanitize_openai_tool_calls, sanitize_tool_name
 
 # Event type for compressed conversation history summaries.
@@ -386,7 +385,7 @@ class SessionManager:
                 f.flush()
                 os.fsync(f.fileno())
             temporary_path.replace(path)
-            _fsync_directory(self.sessions_dir)
+            fsync_directory(self.sessions_dir)
         except BaseException:
             self.invalidate(session.key)
             raise

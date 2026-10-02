@@ -8,6 +8,8 @@ that Bedrock rejected:
 """
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -25,6 +27,32 @@ def _make_tool_call(tc_id: str, name: str = "some_tool") -> dict:
         "type": "function",
         "function": {"name": name, "arguments": "{}"},
     }
+
+
+def test_fresh_process_can_import_save_and_restore_session(tmp_path: Path) -> None:
+    code = """
+import sys
+from pathlib import Path
+from analyst_runtime.session.manager import SessionManager
+
+workspace = Path(sys.argv[1])
+manager = SessionManager(workspace)
+session = manager.get_or_create("test:fresh-import")
+session.add_event({"type": "user_input", "content": "fresh process input"})
+manager.save(session)
+restored = SessionManager(workspace).get_or_create(session.key)
+assert [event["content"] for event in restored.events] == ["fresh process input"]
+print("fresh-import-save-restore-ok")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(tmp_path)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "fresh-import-save-restore-ok\n"
 
 
 # ---------------------------------------------------------------------------

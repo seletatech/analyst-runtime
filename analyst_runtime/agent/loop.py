@@ -22,7 +22,7 @@ from analyst_runtime.agent.analysis_context import (
 )
 from analyst_runtime.agent.context import ContextBuilder
 from analyst_runtime.agent.evidence_refs import collect_evidence_refs
-from analyst_runtime.agent.memory import ProtectedMemorySection, _fsync_directory
+from analyst_runtime.agent.memory import ProtectedMemorySection
 from analyst_runtime.agent.routing import RoutingError, RuntimeRequestRouter
 from analyst_runtime.agent.steering import SteeringCoordinator
 from analyst_runtime.agent.subagent import SubagentManager
@@ -42,6 +42,7 @@ from analyst_runtime.config.schema import ExecToolConfig
 from analyst_runtime.cron.service import CronService
 from analyst_runtime.providers.base import LLMProvider
 from analyst_runtime.session.manager import HISTORY_SUMMARY_TYPE, Session, SessionManager
+from analyst_runtime.utils.helpers import fsync_directory
 from analyst_runtime.utils.tool_calls import sanitize_tool_name
 from analyst_runtime.workspace import WorkspaceConfiguration
 
@@ -1168,7 +1169,7 @@ class AgentLoop:
                 handle.flush()
                 os.fsync(handle.fileno())
             temporary_path.replace(tool_results_dir / filename)
-            _fsync_directory(tool_results_dir)
+            fsync_directory(tool_results_dir)
             return (
                 f"{result[: self._INLINE_RESULT_CHARS]}\n"
                 f"[...{len(result):,} chars total — full result at "
