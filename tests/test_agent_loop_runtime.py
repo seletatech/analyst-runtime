@@ -1015,6 +1015,41 @@ async def test_runtime_verifies_provider_credentials_without_echoing_secret(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("trusted_gateway", [None, {"project_id": "other", "runtime": "other"}])
+async def test_untrusted_profile_resolution_never_enters_the_agent_loop(
+    tmp_path: Path, trusted_gateway: dict | None,
+) -> None:
+    (tmp_path / "workspace.json").write_text(
+        json.dumps({"schema_version": 1, "trusted_gateway": trusted_gateway})
+    )
+    provider = _SequenceProvider([LLMResponse(content="done")])
+    agent = AgentLoop(
+        bus=MessageBus(), provider=provider, workspace=tmp_path, tool_profile="trusted-analysis"
+    )
+    message = InboundMessage(
+        channel="web", sender_id="profile-run", chat_id="profile-run", content="",
+        metadata={
+            "control": "resolve_model_profile",
+            "model_profile_id": "glm-5.3-flash",
+            "project_id": "example-product",
+            "runtime": "example-runtime",
+            "_provider_credential": {"api_key": "synthetic-secret", "provider": "nebius"},
+        },
+    )
+
+    response = await agent._process_message(message)
+
+    assert provider.calls == []
+    assert response is not None
+    assert response.metadata == {
+        "control": "model_profile_rejected", "model_profile_id": "glm-5.3-flash"
+    }
+    assert "_provider_credential" not in message.metadata
+    assert "synthetic-secret" not in json.dumps(response.metadata)
+    assert not list((tmp_path / "sessions").glob("*.jsonl"))
+
+
+@pytest.mark.asyncio
 async def test_runtime_resolves_model_profiles_for_the_trusted_gateway(
     tmp_path: Path,
     monkeypatch,
