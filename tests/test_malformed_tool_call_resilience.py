@@ -72,9 +72,11 @@ class ScriptedProvider(LLMProvider):
         self._script = list(script)
         self._idx = 0
         self.calls = 0
+        self.request_messages: list[list[dict]] = []
 
     async def chat(self, messages, tools=None, model=None, max_tokens=4096, temperature=0.7):
         self.calls += 1
+        self.request_messages.append([dict(message) for message in messages])
         if self._idx < len(self._script):
             resp = self._script[self._idx]
             self._idx += 1
@@ -234,6 +236,43 @@ async def test_model_with_real_work_tolerates_malformed_pauses(tmp_path: Path) -
         f"Loop aborted too early: expected 6 LLM calls, got {provider.calls}"
     )
     assert content == "Finished.", f"Unexpected final content: {content!r}"
+
+
+@pytest.mark.asyncio
+async def test_midtask_continuation_requires_full_answer_in_user_format(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = workspace / "sample.txt"
+    source.write_text("Synthetic sample: 2 records.")
+    answer = '{"result":"2 records","nextAction":"I will inspect the next sample"}'
+    provider = ScriptedProvider([
+        _real_response("read_file", {"path": str(source)}),
+        _final_response(answer),
+        _final_response(answer),
+    ])
+    agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=workspace)
+    session = Session(key="web:synthetic-format")
+
+    result = await agent._run_agent_loop(
+        initial_messages=[{"role": "user", "content": "Return the sample result as JSON."}],
+        session=session,
+        request_uuid="synthetic-format-run",
+    )
+
+    assert provider.calls == 3
+    continuation = provider.request_messages[2][-1]["content"]
+    assert "complete, self-contained final answer" in continuation
+    assert "format requested by the user" in continuation
+    assert "Do not refer to previous messages" in continuation
+    assert "Repeat the full deliverable here" in continuation
+    assert result.content == answer
+    assert result.application_retry_count == 1
+    assert result.provider_retry_count == 0
+    assert [event["reason"] for event in session.events if event["type"] == "retry"] == [
+        "text_only_midtask",
+    ]
+    assert session.events[-1]["type"] == "final_response"
+    assert session.events[-1]["content"] == answer
 
 
 @pytest.mark.asyncio

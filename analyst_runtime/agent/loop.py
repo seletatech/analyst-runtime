@@ -1752,8 +1752,10 @@ class AgentLoop:
                             "role": "user",
                             "content": (
                                 "If you still need to take actions to complete this task, "
-                                "include the tool calls now. If the task is complete, "
-                                "give your final answer."
+                                "include the tool calls now. Otherwise, return the complete, "
+                                "self-contained final answer in the format requested by the user. "
+                                "Do not refer to previous messages or claim the answer was already "
+                                "given. Repeat the full deliverable here."
                             ),
                         }
                     )
@@ -2445,15 +2447,23 @@ class AgentLoop:
             active_model = migrated
 
         with self.request_router.bind_provider(routing):
-            loop_result = await self._run_agent_loop(
-                initial_messages,
-                on_progress=on_progress or _bus_progress,
-                session=session,
-                request_uuid=request_uuid,
-                model=active_model,
-                execution_key=msg.execution_key,
-                allow_tools=not interpretation_only,
-            )
+            try:
+                loop_result = await self._run_agent_loop(
+                    initial_messages,
+                    on_progress=on_progress or _bus_progress,
+                    session=session,
+                    request_uuid=request_uuid,
+                    model=active_model,
+                    execution_key=msg.execution_key,
+                    allow_tools=not interpretation_only,
+                )
+            except asyncio.CancelledError:
+                try:
+                    self._merge_persisted_session_metadata(session)
+                    self.sessions.save(session)
+                except Exception as error:
+                    logger.error("Could not persist cancelled Runtime session ({})", type(error).__name__)
+                raise
         final_content, tools_used = loop_result
 
         terminal_error_code = loop_result.error_code
@@ -2658,11 +2668,19 @@ class AgentLoop:
             }
         )
 
-        final_content, _ = await self._run_agent_loop(
-            initial_messages,
-            session=session,
-            request_uuid=request_uuid,
-        )
+        try:
+            final_content, _ = await self._run_agent_loop(
+                initial_messages,
+                session=session,
+                request_uuid=request_uuid,
+            )
+        except asyncio.CancelledError:
+            try:
+                self._merge_persisted_session_metadata(session)
+                self.sessions.save(session)
+            except Exception as error:
+                logger.error("Could not persist cancelled Runtime session ({})", type(error).__name__)
+            raise
 
         if final_content is None:
             final_content = "Background task completed."
