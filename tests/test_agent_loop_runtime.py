@@ -1749,15 +1749,18 @@ def test_deepseek_cache_usage_is_preserved_and_logged(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_litellm_reports_transport_retries(monkeypatch) -> None:
+@pytest.mark.parametrize("succeeds_on", [2, 3, None])
+async def test_litellm_reports_transport_retries(monkeypatch, succeeds_on: int | None) -> None:
     from analyst_runtime.providers import litellm_provider
 
     attempts = 0
+    captured: list[dict[str, Any]] = []
 
     async def fake_completion(**kwargs):
         nonlocal attempts
         attempts += 1
-        if attempts == 1:
+        captured.append(kwargs)
+        if succeeds_on is None or attempts < succeeds_on:
             raise RuntimeError("Unable to get json response - Expecting value")
         message = SimpleNamespace(content="recovered", tool_calls=None)
         choice = SimpleNamespace(message=message, finish_reason="stop")
@@ -1769,8 +1772,15 @@ async def test_litellm_reports_transport_retries(monkeypatch) -> None:
 
     response = await provider.chat(messages=[{"role": "user", "content": "analyze"}])
 
-    assert attempts == 2
-    assert response.retry_count == 1
+    assert attempts == (succeeds_on or 3)
+    assert response.retry_count == attempts - 1
+    assert all(call.get("num_retries") == 0 for call in captured)
+    assert all(call.get("max_retries") == 0 for call in captured)
+    if succeeds_on is None:
+        assert response.finish_reason == "error"
+        assert response.error_code == "ANALYST-RUNTIME-PROVIDER-001"
+    else:
+        assert response.content == "recovered"
 
 
 @pytest.mark.asyncio

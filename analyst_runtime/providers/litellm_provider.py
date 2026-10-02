@@ -246,6 +246,9 @@ class LiteLLMProvider(LLMProvider):
             "messages": messages,
             "max_tokens": max_tokens,
             "temperature": temperature,
+            # The Runtime loop below owns retry limits and attempt accounting.
+            "num_retries": 0,
+            "max_retries": 0,
         }
 
         # Apply model-specific overrides (e.g. kimi-k2.5 temperature)
