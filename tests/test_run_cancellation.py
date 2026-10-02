@@ -528,6 +528,7 @@ async def test_cancel_targets_one_run_without_stopping_a_sibling_run(
 @pytest.mark.asyncio
 async def test_cancel_preserves_returned_usage_for_reload_without_inventing_pending_usage(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     second_call_started = asyncio.Event()
     provider_cancelled = asyncio.Event()
@@ -581,10 +582,38 @@ async def test_cancel_preserves_returned_usage_for_reload_without_inventing_pend
         conversation_id="synthetic-cancel-conversation",
         run_id="synthetic-cancel-run",
     )
+    completed_snapshots: list[list[dict]] = []
+    publish_outbound = bus.publish_outbound
+
+    async def capture_completed_snapshot(outbound: OutboundMessage) -> None:
+        tool = outbound.metadata.get("tool")
+        if isinstance(tool, dict) and tool.get("status") == "completed":
+            completed_snapshots.append(
+                SessionManager(tmp_path).get_or_create(message.session_key).events
+            )
+        await publish_outbound(outbound)
+
+    monkeypatch.setattr(bus, "publish_outbound", capture_completed_snapshot)
     run_task = asyncio.create_task(agent.run())
     try:
         await bus.publish_inbound(message)
         await asyncio.wait_for(second_call_started.wait(), timeout=2)
+        # A hard exit cannot run the cancellation handler; inspect disk before cancelling.
+        pending = SessionManager(tmp_path).get_or_create(message.session_key)
+        returned = [event for event in pending.events if event.get("type") == "model_call"]
+        assert len(returned) == 1
+        assert returned[0]["usage"] == {
+            "prompt_tokens": 100,
+            "completion_tokens": 10,
+            "total_tokens": 110,
+        }
+        assert any(event.get("type") == "tool_result" for event in pending.events)
+        assert not any(event.get("type") == "final_response" for event in pending.events)
+        assert provider.calls == 2
+        assert len(completed_snapshots) == 1
+        assert any(event.get("type") == "tool_result" for event in completed_snapshots[0])
+        session_file = next((tmp_path / "sessions").glob("*.jsonl"))
+        assert provider.api_key not in session_file.read_text()
         await bus.publish_inbound(
             InboundMessage(
                 channel=message.channel,

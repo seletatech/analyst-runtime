@@ -111,6 +111,45 @@ class _AnalysisAndProcessExec(_StaticAnalysisExec):
         return json.dumps({"status": "complete", "finding": "process evidence"})
 
 
+@pytest.mark.asyncio
+async def test_processing_save_failure_returns_safe_structured_error_without_model_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bus = MessageBus()
+    provider = _SequenceProvider([])
+    agent = AgentLoop(
+        bus=bus, provider=provider, workspace=tmp_path, tool_profile="trusted-analysis"
+    )
+
+    def fail_save(_session: Any) -> None:
+        raise OSError("synthetic-secret-path-and-credential")
+
+    monkeypatch.setattr(agent.sessions, "save", fail_save)
+    await agent._process_and_publish_message(_message("save-failure"))
+    response = await asyncio.wait_for(bus.consume_outbound(), timeout=1)
+
+    assert provider.calls == []
+    assert response.metadata.get("error_code") == "ANALYST-RUNTIME-PROCESSING-001"
+    assert "synthetic-secret-path-and-credential" not in response.content
+    assert "ANALYST-RUNTIME-PROCESSING-001" in response.content
+
+
+def test_reused_tool_call_id_keeps_both_long_result_archives(tmp_path: Path) -> None:
+    agent = AgentLoop(bus=MessageBus(), provider=_SequenceProvider([]), workspace=tmp_path)
+    first_result = "A" * 16_001 + "first distinct tail"
+    second_result = "B" * 16_001 + "second distinct tail"
+
+    first_preview = agent._save_tool_result("reused-call", "read_file", first_result)
+    first_path = tmp_path / first_preview.rsplit("full result at ", 1)[1].removesuffix("]")
+    second_preview = agent._save_tool_result("reused-call", "read_file", second_result)
+    second_path = tmp_path / second_preview.rsplit("full result at ", 1)[1].removesuffix("]")
+
+    assert first_path.read_text() == first_result
+    assert second_path.read_text() == second_result
+    assert first_path != second_path
+
+
 @pytest.mark.parametrize(
     "result",
     [
@@ -763,7 +802,20 @@ async def test_runtime_trace_records_context_compaction_and_retry(tmp_path: Path
 
     assert response is not None
     trace = response.metadata["trace_summary"]
-    assert [event["type"] for event in trace].count("model_call") == 2
+    assert [event["usage"] for event in trace if event["type"] == "model_call"] == [
+        {"prompt_tokens": 100, "completion_tokens": 5},
+        {"prompt_tokens": 20, "completion_tokens": 3},
+        {"prompt_tokens": 30, "completion_tokens": 2},
+    ]
+    restored = SessionManager(tmp_path).get_or_create("web:trace-run")
+    maintenance = [
+        event for event in restored.events if event.get("maintenance") == "context_compaction"
+    ]
+    assert len(maintenance) == 1
+    assert maintenance[0]["usage"] == {"prompt_tokens": 20, "completion_tokens": 3}
+    assert response.metadata["usage"]["prompt_tokens"] == 150
+    assert response.metadata["usage"]["completion_tokens"] == 10
+    assert response.metadata["usage"]["model_call_count"] == 3
     assert any(
         event["type"] == "context_compaction" and event["prompt_tokens"] == 100 for event in trace
     )
@@ -2019,16 +2071,25 @@ async def test_agent_loop_counts_provider_transport_retries(tmp_path: Path) -> N
 @pytest.mark.asyncio
 async def test_active_context_is_compacted_after_token_threshold(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = _SequenceProvider(
         [
             LLMResponse(
                 content="partial result",
                 finish_reason="length",
-                usage={"prompt_tokens": 11},
+                usage={"prompt_tokens": 11, "completion_tokens": 1},
             ),
-            LLMResponse(content="preserved facts and unfinished work", finish_reason="stop"),
-            LLMResponse(content="finished after compacting", finish_reason="stop"),
+            LLMResponse(
+                content="preserved facts and unfinished work",
+                finish_reason="stop",
+                usage={"prompt_tokens": 20, "completion_tokens": 3},
+            ),
+            LLMResponse(
+                content="finished after compacting",
+                finish_reason="stop",
+                usage={"prompt_tokens": 30, "completion_tokens": 2},
+            ),
         ]
     )
     agent = AgentLoop(
@@ -2040,17 +2101,53 @@ async def test_active_context_is_compacted_after_token_threshold(
         consolidation_model="different-maintenance-model",
     )
 
-    loop_result = await agent._run_agent_loop(
-        [
-            {"role": "system", "content": "system rules"},
-            {"role": "user", "content": "OLD RAW CONTEXT"},
-        ]
+    session = agent.sessions.get_or_create("web:compaction-checkpoint")
+    session.add_event(
+        {"type": "user_input", "uuid": "compaction-input", "content": "OLD RAW CONTEXT"}
     )
+    agent.sessions.save(session)
+    third_call_started = asyncio.Event()
+    release_third = asyncio.Event()
+    provider_chat = provider.chat
+
+    async def pending_third_call(**kwargs: Any) -> LLMResponse:
+        if len(provider.calls) == 2:
+            third_call_started.set()
+            await release_third.wait()
+        return await provider_chat(**kwargs)
+
+    monkeypatch.setattr(provider, "chat", pending_third_call)
+    task = asyncio.create_task(
+        agent._run_agent_loop(
+            [
+                {"role": "system", "content": "system rules"},
+                {"role": "user", "content": "OLD RAW CONTEXT"},
+            ],
+            session=session,
+            request_uuid="compaction-input",
+        )
+    )
+    try:
+        await asyncio.wait_for(third_call_started.wait(), timeout=1)
+        assert not task.done()
+        restored = SessionManager(tmp_path).get_or_create(session.key)
+        returned = [event for event in restored.events if event.get("type") == "model_call"]
+        assert [event["usage"] for event in returned] == [
+            {"prompt_tokens": 11, "completion_tokens": 1},
+            {"prompt_tokens": 20, "completion_tokens": 3},
+        ]
+        assert any(event.get("type") == "context_compaction" for event in restored.events)
+        assert not any(event.get("type") == "final_response" for event in restored.events)
+        release_third.set()
+        loop_result = await task
+    finally:
+        release_third.set()
+        await asyncio.gather(task, return_exceptions=True)
 
     assert loop_result.content == "finished after compacting"
     assert loop_result.model_call_count == 3
     assert loop_result.retry_count == 1
-    assert loop_result.usage == {"prompt_tokens": 11}
+    assert loop_result.usage == {"prompt_tokens": 61, "completion_tokens": 6}
     assert provider.models == ["test-model", "test-model", "test-model"]
     final_request = provider.calls[2]
     rendered = str(final_request)

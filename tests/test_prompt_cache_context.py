@@ -68,5 +68,6 @@ async def test_active_loop_bounds_tool_results_without_mutating_previous_prefix(
     result = next(m for m in calls[1] if m["role"] == "tool")
     assert result["content"].startswith("evidence row")
     assert len(result["content"]) < loop._INLINE_RESULT_CHARS + 300
-    assert (tmp_path / "sessions/tool-results/read-1.txt").read_text() == payload
+    archive = tmp_path / result["content"].rsplit("full result at ", 1)[1].removesuffix("]")
+    assert archive.read_text() == payload
     assert calls[2][: len(calls[1])] == calls[1]

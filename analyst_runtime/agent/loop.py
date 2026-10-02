@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import tempfile
 import uuid
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
@@ -21,7 +22,7 @@ from analyst_runtime.agent.analysis_context import (
 )
 from analyst_runtime.agent.context import ContextBuilder
 from analyst_runtime.agent.evidence_refs import collect_evidence_refs
-from analyst_runtime.agent.memory import ProtectedMemorySection
+from analyst_runtime.agent.memory import ProtectedMemorySection, _fsync_directory
 from analyst_runtime.agent.routing import RoutingError, RuntimeRequestRouter
 from analyst_runtime.agent.steering import SteeringCoordinator
 from analyst_runtime.agent.subagent import SubagentManager
@@ -107,6 +108,7 @@ class AgentLoop:
     MODEL_PROFILE_ERROR_CODE = "ANALYST-RUNTIME-MODEL-001"
     MODEL_CREDENTIAL_ERROR_CODE = "ANALYST-RUNTIME-CREDENTIAL-001"
     PROVIDER_ERROR_CODE = "ANALYST-RUNTIME-PROVIDER-001"
+    PROCESSING_ERROR_CODE = "ANALYST-RUNTIME-PROCESSING-001"
 
     @classmethod
     def _support_error_message(cls, error_code: str) -> str:
@@ -723,6 +725,11 @@ class AgentLoop:
             if key not in session.metadata or not session.metadata[key]:
                 session.metadata[key] = value
 
+    def _checkpoint_session(self, session: Session | None) -> None:
+        if session is not None:
+            self._merge_persisted_session_metadata(session)
+            self.sessions.save(session)
+
     @staticmethod
     def _extract_action_chips(content: str) -> tuple[str, list[list[dict]] | None]:
         """Strip <!-- CHIPS: [...] --> block from content and return (clean_content, keyboard).
@@ -1138,7 +1145,7 @@ class AgentLoop:
 
         Long results: the first _INLINE_RESULT_CHARS chars are returned inline so
         the LLM has context in subsequent turns, and the full result is archived
-        to sessions/tool-results/{id}.txt for read_file access when needed.
+        to a content-scoped file under sessions/tool-results for read_file access.
         """
         if len(result) <= self._INLINE_RESULT_CHARS:
             return result  # short result: inline, no file needed
@@ -1147,10 +1154,21 @@ class AgentLoop:
         tool_results_dir = self.workspace / "sessions" / "tool-results"
         tool_results_dir.mkdir(parents=True, exist_ok=True)
         # Sanitize tool_call_id to prevent path traversal — keep only safe chars
-        safe_id = "".join(c for c in tool_call_id if c.isalnum() or c in "-_")
-        filename = f"{safe_id}.txt"
+        safe_id = "".join(c for c in tool_call_id if c.isascii() and (c.isalnum() or c in "-_"))
+        temporary_path: Path | None = None
         try:
-            (tool_results_dir / filename).write_text(result, encoding="utf-8")
+            content_hash = hashlib.sha256(result.encode("utf-8")).hexdigest()
+            filename = f"{safe_id[:64]}-{content_hash}.txt"
+            descriptor, temporary_name = tempfile.mkstemp(
+                dir=tool_results_dir, prefix=".result.", suffix=".tmp",
+            )
+            temporary_path = Path(temporary_name)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(result)
+                handle.flush()
+                os.fsync(handle.fileno())
+            temporary_path.replace(tool_results_dir / filename)
+            _fsync_directory(tool_results_dir)
             return (
                 f"{result[: self._INLINE_RESULT_CHARS]}\n"
                 f"[...{len(result):,} chars total — full result at "
@@ -1159,6 +1177,9 @@ class AgentLoop:
         except Exception as exc:
             logger.warning("Failed to save tool result {}: {}", tool_call_id, exc)
             return result  # fall back to full inline if archive fails
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
 
     def _session_tool_result_content(
         self,
@@ -1321,6 +1342,8 @@ class AgentLoop:
         while iteration < self.max_iterations:
             iteration += 1
             available_tools = self.tools.get_definitions() if allow_tools else []
+            if iteration > 1 and session and request_uuid:
+                self._checkpoint_session(session)
 
             response = await self.provider.chat(
                 messages=messages,
@@ -1365,6 +1388,7 @@ class AgentLoop:
                             "reason": "provider_retry",
                         }
                     )
+                self._checkpoint_session(session)
             model_telemetry.record(response)
 
             if response.finish_reason == "error":
@@ -1430,6 +1454,7 @@ class AgentLoop:
                         }
                     )
                     parent_uuid = llm_uuid
+                    self._checkpoint_session(session)
 
                 pre_results = await self.tools.pre_execute(response.tool_calls)
 
@@ -1479,11 +1504,6 @@ class AgentLoop:
                     terminal_status = (
                         "completed" if self._tool_call_succeeded(result) else "failed"
                     )
-                    if on_progress:
-                        await on_progress(
-                            None,
-                            self._tool_progress(tool_call, terminal_status, result),
-                        )
                     # Bound results on first insertion, not on every later call:
                     # this keeps the growing prompt prefix stable for provider caching.
                     # Full evidence remains available in the archive and to binding below.
@@ -1533,6 +1553,13 @@ class AgentLoop:
                             session,
                             result,
                             parent_uuid=parent_uuid,
+                        )
+                    if _persist_session:
+                        self._checkpoint_session(session)
+                    if on_progress:
+                        await on_progress(
+                            None,
+                            self._tool_progress(tool_call, terminal_status, result),
                         )
 
                 steered_messages = await self.steering.apply_pending(
@@ -1592,6 +1619,9 @@ class AgentLoop:
                     response.usage,
                     model=active_model,
                     telemetry=model_telemetry,
+                    session=session,
+                    request_uuid=request_uuid,
+                    iteration=iteration,
                 )
                 if messages is not messages_before_compaction and session and request_uuid:
                     session.add_event(
@@ -1639,6 +1669,9 @@ class AgentLoop:
                     response.usage,
                     model=active_model,
                     telemetry=model_telemetry,
+                    session=session,
+                    request_uuid=request_uuid,
+                    iteration=iteration,
                 )
                 if messages is not messages_before_compaction and session and request_uuid:
                     session.add_event(
@@ -1835,6 +1868,9 @@ class AgentLoop:
         *,
         model: str,
         telemetry: RunModelTelemetry | None = None,
+        session: Session | None = None,
+        request_uuid: str | None = None,
+        iteration: int | None = None,
     ) -> list[dict[str, Any]]:
         """Replace old model context with a summary after the token threshold."""
         prompt_tokens = int(
@@ -1850,6 +1886,9 @@ class AgentLoop:
             messages,
             model=model,
             telemetry=telemetry,
+            session=session,
+            request_uuid=request_uuid,
+            iteration=iteration,
         )
         if compacted is messages:
             return messages
@@ -1867,6 +1906,9 @@ class AgentLoop:
         *,
         model: str,
         telemetry: RunModelTelemetry | None = None,
+        session: Session | None = None,
+        request_uuid: str | None = None,
+        iteration: int | None = None,
     ) -> list[dict[str, Any]]:
         """Summarize older messages while preserving system rules and recent work."""
         leading_system_count = 0
@@ -1923,11 +1965,27 @@ class AgentLoop:
             if telemetry is not None:
                 telemetry.record(response)
             summary = (response.content or "").strip()
-            if not summary:
-                logger.warning("Active context compaction returned an empty summary")
-                return messages
         except Exception as exc:
             logger.error("Active context compaction failed: {}", exc)
+            return messages
+
+        if session and request_uuid:
+            session.add_event(
+                {
+                    "uuid": str(uuid.uuid4()),
+                    "parent_uuid": request_uuid,
+                    "type": "model_call",
+                    "model": model,
+                    "iteration": iteration,
+                    "maintenance": "context_compaction",
+                    "usage": response.usage,
+                    "provider_retry_count": response.retry_count,
+                    "finish_reason": response.finish_reason,
+                }
+            )
+            self._checkpoint_session(session)
+        if not summary:
+            logger.warning("Active context compaction returned an empty summary")
             return messages
 
         return [
@@ -2041,14 +2099,15 @@ class AgentLoop:
         except asyncio.CancelledError:
             logger.info("Cancelled active chat run {}", msg.execution_key)
         except Exception as e:
-            logger.exception(f"Error processing message: {e}")
+            logger.error("Runtime processing failed ({})", type(e).__name__)
             await self.bus.publish_outbound(
                 OutboundMessage(
                     channel=msg.channel,
                     chat_id=msg.chat_id,
-                    content=f"Sorry, I encountered an error: {str(e)}",
+                    content=self._support_error_message(self.PROCESSING_ERROR_CODE),
                     run_id=msg.run_id,
                     conversation_id=msg.conversation_id,
+                    metadata={"error_code": self.PROCESSING_ERROR_CODE},
                 )
             )
 
