@@ -86,6 +86,7 @@ class AgentLoopResult:
     retry_count: int
     usage: dict[str, int]
     error_code: str | None = None
+    returned_usage_complete: bool = False
 
     def __iter__(self):
         yield self.content
@@ -1860,6 +1861,11 @@ class AgentLoop:
             retry_count=model_telemetry.retry_count,
             usage=model_telemetry.usage,
             error_code=terminal_error_code,
+            returned_usage_complete=(
+                terminal_reason == "iteration_limit"
+                and model_telemetry.model_call_count > 0
+                and model_telemetry.complete_returned_usage
+            ),
         )
 
     async def _maybe_compact_active_context(
@@ -2635,6 +2641,11 @@ class AgentLoop:
             "provider_retry_count": loop_result.provider_retry_count,
             "retry_count": loop_result.retry_count,
         }
+        if terminal_error_code == self.ITERATION_LIMIT_ERROR_CODE:
+            # Declares returned-call completeness only, never provider invoice coverage.
+            outbound_metadata["usage"]["returned_usage_complete"] = int(
+                loop_result.returned_usage_complete
+            )
         outbound_metadata["model"] = active_model
         outbound_metadata["runtime_provenance"] = {
             **runtime_provenance,

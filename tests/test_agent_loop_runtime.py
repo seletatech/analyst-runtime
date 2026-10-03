@@ -2307,3 +2307,35 @@ async def test_short_but_oversized_exchange_is_fully_compacted(tmp_path: Path) -
     ]
     assert "summary of the large result" in str(compacted)
     assert "very large result" not in str(compacted)
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("usages", "retries", "complete"),
+    [
+        ([{"prompt_tokens": 10, "completion_tokens": 2}] * 5, 0, 1),
+        ([{"prompt_tokens": 10, "completion_tokens": 2}], 0, 1),
+        ([{}], 0, 0),
+        ([{"prompt_tokens": 10, "completion_tokens": 2}, {}], 0, 0),
+        ([{"prompt_tokens": 10, "completion_tokens": 2}], 1, 0),
+        ([{"prompt_tokens": -1, "completion_tokens": 2}], 0, 0),
+        ([{"prompt_tokens": True, "completion_tokens": 2}], 0, 0),
+    ],
+)
+async def test_iteration_terminal_flags_complete_returned_usage(
+    tmp_path: Path, usages: list[dict[str, int]], retries: int, complete: int,
+) -> None:
+    provider = _SequenceProvider([
+        LLMResponse(
+            content=None, finish_reason="tool_calls", usage=usage,
+            retry_count=retries,
+            tool_calls=[ToolCallRequest(id=f"read-{index}", name="exec",
+                                        arguments={"command": "printf inspected"})],
+        ) for index, usage in enumerate(usages)
+    ])
+    agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path,
+                      max_iterations=len(usages), tool_profile="trusted-analysis")
+    response = await agent._process_message(_message("iteration-usage"))
+    assert response is not None
+    assert response.metadata["error_code"] == "ANALYST-RUNTIME-ITERATION-001"
+    assert len(provider.calls) == len(usages)
+    assert response.metadata["usage"].get("returned_usage_complete") == complete
