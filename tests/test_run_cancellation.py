@@ -15,6 +15,8 @@ from analyst_runtime.agent.tools.shell import ExecTool
 from analyst_runtime.bus.events import InboundMessage, OutboundMessage
 from analyst_runtime.bus.queue import MessageBus
 from analyst_runtime.channels.web import WebChannel
+from analyst_runtime.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from analyst_runtime.session.manager import SessionManager
 
 
 @pytest.mark.asyncio
@@ -47,6 +49,44 @@ async def test_web_channel_separates_execution_from_conversation_identity() -> N
     assert published.execution_key == "web:run-123"
     assert published.session_key == "web:conversation-456"
     assert published.chat_id == "chat-run-123"
+
+
+@pytest.mark.asyncio
+async def test_web_poll_identity_is_stable_until_a_new_channel_instance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    poll_params: list[dict] = []
+    active_channel: WebChannel
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args) -> None:
+            return None
+
+        async def get(self, _url, **kwargs):
+            poll_params.append(kwargs["params"])
+            if len(poll_params) % 2 == 0:
+                active_channel._running = False
+            return MagicMock(status_code=200, json=lambda: {"type": "timeout"})
+
+    monkeypatch.setattr("analyst_runtime.channels.web.httpx.AsyncClient", FakeAsyncClient)
+    for _ in range(2):
+        active_channel = WebChannel(
+            MagicMock(sandbox_id="test-sandbox", gateway_url="http://gateway"), MagicMock()
+        )
+        active_channel._running = True
+        await active_channel._poll_loop()
+
+    first, repeated, fresh, fresh_repeated = poll_params
+    assert first == repeated and fresh == fresh_repeated
+    assert first["runtime_instance_id"] != fresh["runtime_instance_id"]
+    assert len(first["runtime_instance_id"]) == len(fresh["runtime_instance_id"]) == 32
+    assert first["timeout"] == fresh["timeout"] == 30
 
 
 @pytest.mark.asyncio
@@ -480,6 +520,137 @@ async def test_cancel_targets_one_run_without_stopping_a_sibling_run(
         assert first_cancelled.is_set() is False
     finally:
         release_first.set()
+        agent.stop()
+        run_task.cancel()
+        await asyncio.gather(run_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_cancel_preserves_returned_usage_for_reload_without_inventing_pending_usage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    second_call_started = asyncio.Event()
+    provider_cancelled = asyncio.Event()
+
+    class PartialProvider(LLMProvider):
+        def __init__(self) -> None:
+            super().__init__(api_key="synthetic-private-test-credential")
+            self.calls = 0
+
+        def get_default_model(self) -> str:
+            return "synthetic-test-model"
+
+        async def chat(self, **_kwargs) -> LLMResponse:
+            self.calls += 1
+            if self.calls == 1:
+                return LLMResponse(
+                    content="",
+                    finish_reason="tool_calls",
+                    tool_calls=[
+                        ToolCallRequest(
+                            id="synthetic-read",
+                            name="read_file",
+                            arguments={"path": "synthetic.txt"},
+                        )
+                    ],
+                    usage={"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110},
+                )
+            second_call_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                provider_cancelled.set()
+                raise
+            raise AssertionError("Blocked synthetic provider must be cancelled")
+
+    (tmp_path / "synthetic.txt").write_text("SYNTHETIC cancellation evidence\n")
+    bus = MessageBus()
+    provider = PartialProvider()
+    agent = AgentLoop(
+        bus=bus,
+        provider=provider,
+        workspace=tmp_path,
+        tool_profile="trusted-analysis",
+    )
+    agent._connect_mcp = AsyncMock()  # type: ignore[method-assign]
+    message = InboundMessage(
+        channel="web",
+        sender_id="synthetic-user",
+        chat_id="chat-synthetic-cancel-run",
+        content="SYNTHETIC read the local note, then continue",
+        conversation_id="synthetic-cancel-conversation",
+        run_id="synthetic-cancel-run",
+    )
+    completed_snapshots: list[list[dict]] = []
+    publish_outbound = bus.publish_outbound
+
+    async def capture_completed_snapshot(outbound: OutboundMessage) -> None:
+        tool = outbound.metadata.get("tool")
+        if isinstance(tool, dict) and tool.get("status") == "completed":
+            completed_snapshots.append(
+                SessionManager(tmp_path).get_or_create(message.session_key).events
+            )
+        await publish_outbound(outbound)
+
+    monkeypatch.setattr(bus, "publish_outbound", capture_completed_snapshot)
+    run_task = asyncio.create_task(agent.run())
+    try:
+        await bus.publish_inbound(message)
+        await asyncio.wait_for(second_call_started.wait(), timeout=2)
+        # A hard exit cannot run the cancellation handler; inspect disk before cancelling.
+        pending = SessionManager(tmp_path).get_or_create(message.session_key)
+        returned = [event for event in pending.events if event.get("type") == "model_call"]
+        assert len(returned) == 1
+        assert returned[0]["usage"] == {
+            "prompt_tokens": 100,
+            "completion_tokens": 10,
+            "total_tokens": 110,
+        }
+        assert any(event.get("type") == "tool_result" for event in pending.events)
+        assert not any(event.get("type") == "final_response" for event in pending.events)
+        assert provider.calls == 2
+        assert len(completed_snapshots) == 1
+        assert any(event.get("type") == "tool_result" for event in completed_snapshots[0])
+        session_file = next((tmp_path / "sessions").glob("*.jsonl"))
+        assert provider.api_key not in session_file.read_text()
+        await bus.publish_inbound(
+            InboundMessage(
+                channel=message.channel,
+                sender_id=message.sender_id,
+                chat_id=message.chat_id,
+                content="",
+                conversation_id=message.conversation_id,
+                metadata={"control": "cancel"},
+                run_id=message.run_id,
+            )
+        )
+        for _ in range(8):
+            acknowledgement = await asyncio.wait_for(bus.consume_outbound(), timeout=2)
+            if acknowledgement.metadata.get("control") == "cancelled":
+                break
+        else:
+            pytest.fail("Runtime did not acknowledge this run's cancellation")
+        assert acknowledgement.run_id == message.run_id
+        assert provider_cancelled.is_set()
+        assert not run_task.done()
+
+        # Recreate the session manager to prove disk persistence, not its live cache.
+        restored = SessionManager(tmp_path).get_or_create(message.session_key)
+        returned = [event for event in restored.events if event.get("type") == "model_call"]
+        assert len(returned) == 1
+        assert returned[0]["usage"] == {
+            "prompt_tokens": 100,
+            "completion_tokens": 10,
+            "total_tokens": 110,
+        }
+        assert provider.calls == 2
+        assert not any(event.get("type") == "final_response" for event in restored.events)
+        assert any(event.get("type") == "user_input" for event in restored.events)
+        assert any(event.get("type") == "tool_result" for event in restored.events)
+        session_file = next((tmp_path / "sessions").glob("*.jsonl"))
+        assert provider.api_key not in session_file.read_text()
+    finally:
         agent.stop()
         run_task.cancel()
         await asyncio.gather(run_task, return_exceptions=True)

@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import tempfile
 import uuid
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ from analyst_runtime.agent.analysis_context import (
     AnalysisArtifactStore,
 )
 from analyst_runtime.agent.context import ContextBuilder
+from analyst_runtime.agent.evidence_refs import collect_evidence_refs
 from analyst_runtime.agent.memory import ProtectedMemorySection
 from analyst_runtime.agent.routing import RoutingError, RuntimeRequestRouter
 from analyst_runtime.agent.steering import SteeringCoordinator
@@ -40,6 +42,7 @@ from analyst_runtime.config.schema import ExecToolConfig
 from analyst_runtime.cron.service import CronService
 from analyst_runtime.providers.base import LLMProvider
 from analyst_runtime.session.manager import HISTORY_SUMMARY_TYPE, Session, SessionManager
+from analyst_runtime.utils.helpers import fsync_directory
 from analyst_runtime.utils.tool_calls import sanitize_tool_name
 from analyst_runtime.workspace import WorkspaceConfiguration
 
@@ -63,6 +66,7 @@ _SELF_CONTAINED_SEMANTICS_CONFIRMATION_RE = re.compile(
     r"\s*确认以下口径并分析\s*[：:]\s*\S.+\s*",
     re.DOTALL,
 )
+_SEMANTICS_LIST_ITEM_RE = re.compile(r"(?m)^\s*(?:\d+[.)、]|[-•])\s*\S+")
 _ARTIFACT_ID_RE = re.compile(r"[a-z][a-z0-9-]{0,63}:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 
 ProgressTool = dict[str, str]
@@ -82,6 +86,7 @@ class AgentLoopResult:
     retry_count: int
     usage: dict[str, int]
     error_code: str | None = None
+    returned_usage_complete: bool = False
 
     def __iter__(self):
         yield self.content
@@ -105,6 +110,7 @@ class AgentLoop:
     MODEL_PROFILE_ERROR_CODE = "ANALYST-RUNTIME-MODEL-001"
     MODEL_CREDENTIAL_ERROR_CODE = "ANALYST-RUNTIME-CREDENTIAL-001"
     PROVIDER_ERROR_CODE = "ANALYST-RUNTIME-PROVIDER-001"
+    PROCESSING_ERROR_CODE = "ANALYST-RUNTIME-PROCESSING-001"
 
     @classmethod
     def _support_error_message(cls, error_code: str) -> str:
@@ -305,7 +311,7 @@ class AgentLoop:
         max_iterations: int = 500,
         temperature: float = 0.7,
         max_tokens: int = 4096,
-        memory_window: int = 50,
+        memory_window: int = 20,
         brave_api_key: str | None = None,
         exec_config: ExecToolConfig | None = None,
         cron_service: CronService | None = None,
@@ -375,6 +381,13 @@ class AgentLoop:
         self.compress_keep_turns = compress_keep_turns
         self.consolidation_interval = consolidation_interval
         self.consolidation_model = consolidation_model
+        self.enable_memory_consolidation = (
+            tool_profile != "trusted-analysis"
+            or os.environ.get("ANALYST_RUNTIME_ENABLE_MEMORY_CONSOLIDATION", "")
+            .strip()
+            .lower()
+            in {"1", "true", "yes", "on"}
+        )
         self.max_concurrent_messages = max(1, max_concurrent_messages)
         self.context_compact_threshold = max(1, context_compact_threshold)
         self.context_compact_keep_messages = max(1, context_compact_keep_messages)
@@ -410,8 +423,9 @@ class AgentLoop:
         supplies_complete_card = bool(
             _SELF_CONTAINED_SEMANTICS_CONFIRMATION_RE.fullmatch(user_message)
         )
+        supplies_natural_card = self._looks_like_complete_natural_semantics_answer(user_message)
         if self.tool_profile != "trusted-analysis" or not (
-            confirms_previous_card or supplies_complete_card
+            confirms_previous_card or supplies_complete_card or supplies_natural_card
         ):
             return None
         proposal_index = next(
@@ -427,7 +441,7 @@ class AgentLoop:
         if proposal_index is None:
             return None
         proposal = str(history[proposal_index].get("content") or "").strip()
-        confirmed_semantics = user_message.strip() if supplies_complete_card else proposal
+        confirmed_semantics = user_message.strip() if (supplies_complete_card or supplies_natural_card) else proposal
         question = next(
             (
                 str(message.get("content") or "").strip()
@@ -468,6 +482,26 @@ class AgentLoop:
         )
         return question
 
+    @staticmethod
+    def _looks_like_complete_natural_semantics_answer(user_message: str) -> bool:
+        """Recognize a self-contained natural-language answer without a magic phrase.
+
+        Clarification replies remain in the current conversation unless they look
+        like a complete multi-part card.  This deliberately accepts the numbered
+        answers used by the product and a long, clause-rich one-line answer, while
+        rejecting questions and short partial replies.
+        """
+        normalized = re.sub(r"\s+", " ", user_message).strip()
+        if len(normalized) < 20 or any(mark in normalized for mark in ("？", "?")):
+            return False
+        if len(_SEMANTICS_LIST_ITEM_RE.findall(user_message)) >= 2:
+            return True
+        clause_count = sum(normalized.count(mark) for mark in ("；", ";", "：", ":"))
+        return clause_count >= 2 and any(
+            marker in normalized
+            for marker in ("范围", "日期", "按", "只计", "排除", "所有", "单位", "口径")
+        )
+
     def _semantic_clarification_instruction(
         self,
         user_message: str,
@@ -476,7 +510,14 @@ class AgentLoop:
         if self.tool_profile != "trusted-analysis" or (
             _EXPLICIT_SEMANTICS_CONFIRMATION_RE.fullmatch(user_message)
             or _SELF_CONTAINED_SEMANTICS_CONFIRMATION_RE.fullmatch(user_message)
+            or self._looks_like_complete_natural_semantics_answer(user_message)
         ):
+            return None
+        # A cross-conversation memory hit already proves that the complete
+        # semantic card was confirmed.  Do not append the first-turn
+        # clarification policy as well: the two system instructions conflict,
+        # and the later clarification instruction can make the model ask again.
+        if self._confirmed_semantics_sha256(user_message) is not None:
             return None
         proposal_index = next(
             (
@@ -685,6 +726,11 @@ class AgentLoop:
 
             if key not in session.metadata or not session.metadata[key]:
                 session.metadata[key] = value
+
+    def _checkpoint_session(self, session: Session | None) -> None:
+        if session is not None:
+            self._merge_persisted_session_metadata(session)
+            self.sessions.save(session)
 
     @staticmethod
     def _extract_action_chips(content: str) -> tuple[str, list[list[dict]] | None]:
@@ -1101,7 +1147,7 @@ class AgentLoop:
 
         Long results: the first _INLINE_RESULT_CHARS chars are returned inline so
         the LLM has context in subsequent turns, and the full result is archived
-        to sessions/tool-results/{id}.txt for read_file access when needed.
+        to a content-scoped file under sessions/tool-results for read_file access.
         """
         if len(result) <= self._INLINE_RESULT_CHARS:
             return result  # short result: inline, no file needed
@@ -1110,10 +1156,21 @@ class AgentLoop:
         tool_results_dir = self.workspace / "sessions" / "tool-results"
         tool_results_dir.mkdir(parents=True, exist_ok=True)
         # Sanitize tool_call_id to prevent path traversal — keep only safe chars
-        safe_id = "".join(c for c in tool_call_id if c.isalnum() or c in "-_")
-        filename = f"{safe_id}.txt"
+        safe_id = "".join(c for c in tool_call_id if c.isascii() and (c.isalnum() or c in "-_"))
+        temporary_path: Path | None = None
         try:
-            (tool_results_dir / filename).write_text(result, encoding="utf-8")
+            content_hash = hashlib.sha256(result.encode("utf-8")).hexdigest()
+            filename = f"{safe_id[:64]}-{content_hash}.txt"
+            descriptor, temporary_name = tempfile.mkstemp(
+                dir=tool_results_dir, prefix=".result.", suffix=".tmp",
+            )
+            temporary_path = Path(temporary_name)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(result)
+                handle.flush()
+                os.fsync(handle.fileno())
+            temporary_path.replace(tool_results_dir / filename)
+            fsync_directory(tool_results_dir)
             return (
                 f"{result[: self._INLINE_RESULT_CHARS]}\n"
                 f"[...{len(result):,} chars total — full result at "
@@ -1122,6 +1179,9 @@ class AgentLoop:
         except Exception as exc:
             logger.warning("Failed to save tool result {}: {}", tool_call_id, exc)
             return result  # fall back to full inline if archive fails
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
 
     def _session_tool_result_content(
         self,
@@ -1284,6 +1344,8 @@ class AgentLoop:
         while iteration < self.max_iterations:
             iteration += 1
             available_tools = self.tools.get_definitions() if allow_tools else []
+            if iteration > 1 and session and request_uuid:
+                self._checkpoint_session(session)
 
             response = await self.provider.chat(
                 messages=messages,
@@ -1328,6 +1390,7 @@ class AgentLoop:
                             "reason": "provider_retry",
                         }
                     )
+                self._checkpoint_session(session)
             model_telemetry.record(response)
 
             if response.finish_reason == "error":
@@ -1393,6 +1456,7 @@ class AgentLoop:
                         }
                     )
                     parent_uuid = llm_uuid
+                    self._checkpoint_session(session)
 
                 pre_results = await self.tools.pre_execute(response.tool_calls)
 
@@ -1442,11 +1506,6 @@ class AgentLoop:
                     terminal_status = (
                         "completed" if self._tool_call_succeeded(result) else "failed"
                     )
-                    if on_progress:
-                        await on_progress(
-                            None,
-                            self._tool_progress(tool_call, terminal_status, result),
-                        )
                     # Bound results on first insertion, not on every later call:
                     # this keeps the growing prompt prefix stable for provider caching.
                     # Full evidence remains available in the archive and to binding below.
@@ -1496,6 +1555,13 @@ class AgentLoop:
                             session,
                             result,
                             parent_uuid=parent_uuid,
+                        )
+                    if _persist_session:
+                        self._checkpoint_session(session)
+                    if on_progress:
+                        await on_progress(
+                            None,
+                            self._tool_progress(tool_call, terminal_status, result),
                         )
 
                 steered_messages = await self.steering.apply_pending(
@@ -1555,6 +1621,9 @@ class AgentLoop:
                     response.usage,
                     model=active_model,
                     telemetry=model_telemetry,
+                    session=session,
+                    request_uuid=request_uuid,
+                    iteration=iteration,
                 )
                 if messages is not messages_before_compaction and session and request_uuid:
                     session.add_event(
@@ -1602,6 +1671,9 @@ class AgentLoop:
                     response.usage,
                     model=active_model,
                     telemetry=model_telemetry,
+                    session=session,
+                    request_uuid=request_uuid,
+                    iteration=iteration,
                 )
                 if messages is not messages_before_compaction and session and request_uuid:
                     session.add_event(
@@ -1715,8 +1787,10 @@ class AgentLoop:
                             "role": "user",
                             "content": (
                                 "If you still need to take actions to complete this task, "
-                                "include the tool calls now. If the task is complete, "
-                                "give your final answer."
+                                "include the tool calls now. Otherwise, return the complete, "
+                                "self-contained final answer in the format requested by the user. "
+                                "Do not refer to previous messages or claim the answer was already "
+                                "given. Repeat the full deliverable here."
                             ),
                         }
                     )
@@ -1763,6 +1837,17 @@ class AgentLoop:
                             "finish_reason": response.finish_reason,
                         }
                     )
+                if (
+                    self.enable_memory_consolidation
+                    and session
+                    and len(session.get_consolidation_events()) > self.memory_window
+                ):
+                    await self._consolidate_memory(
+                        session,
+                        model=active_model,
+                        telemetry=model_telemetry,
+                        request_uuid=request_uuid,
+                    )
                 break
 
         return AgentLoopResult(
@@ -1776,6 +1861,11 @@ class AgentLoop:
             retry_count=model_telemetry.retry_count,
             usage=model_telemetry.usage,
             error_code=terminal_error_code,
+            returned_usage_complete=(
+                terminal_reason == "iteration_limit"
+                and model_telemetry.model_call_count > 0
+                and model_telemetry.complete_returned_usage
+            ),
         )
 
     async def _maybe_compact_active_context(
@@ -1785,6 +1875,9 @@ class AgentLoop:
         *,
         model: str,
         telemetry: RunModelTelemetry | None = None,
+        session: Session | None = None,
+        request_uuid: str | None = None,
+        iteration: int | None = None,
     ) -> list[dict[str, Any]]:
         """Replace old model context with a summary after the token threshold."""
         prompt_tokens = int(
@@ -1800,6 +1893,9 @@ class AgentLoop:
             messages,
             model=model,
             telemetry=telemetry,
+            session=session,
+            request_uuid=request_uuid,
+            iteration=iteration,
         )
         if compacted is messages:
             return messages
@@ -1817,6 +1913,9 @@ class AgentLoop:
         *,
         model: str,
         telemetry: RunModelTelemetry | None = None,
+        session: Session | None = None,
+        request_uuid: str | None = None,
+        iteration: int | None = None,
     ) -> list[dict[str, Any]]:
         """Summarize older messages while preserving system rules and recent work."""
         leading_system_count = 0
@@ -1873,11 +1972,27 @@ class AgentLoop:
             if telemetry is not None:
                 telemetry.record(response)
             summary = (response.content or "").strip()
-            if not summary:
-                logger.warning("Active context compaction returned an empty summary")
-                return messages
         except Exception as exc:
             logger.error("Active context compaction failed: {}", exc)
+            return messages
+
+        if session and request_uuid:
+            session.add_event(
+                {
+                    "uuid": str(uuid.uuid4()),
+                    "parent_uuid": request_uuid,
+                    "type": "model_call",
+                    "model": model,
+                    "iteration": iteration,
+                    "maintenance": "context_compaction",
+                    "usage": response.usage,
+                    "provider_retry_count": response.retry_count,
+                    "finish_reason": response.finish_reason,
+                }
+            )
+            self._checkpoint_session(session)
+        if not summary:
+            logger.warning("Active context compaction returned an empty summary")
             return messages
 
         return [
@@ -1991,14 +2106,15 @@ class AgentLoop:
         except asyncio.CancelledError:
             logger.info("Cancelled active chat run {}", msg.execution_key)
         except Exception as e:
-            logger.exception(f"Error processing message: {e}")
+            logger.error("Runtime processing failed ({})", type(e).__name__)
             await self.bus.publish_outbound(
                 OutboundMessage(
                     channel=msg.channel,
                     chat_id=msg.chat_id,
-                    content=f"Sorry, I encountered an error: {str(e)}",
+                    content=self._support_error_message(self.PROCESSING_ERROR_CODE),
                     run_id=msg.run_id,
                     conversation_id=msg.conversation_id,
+                    metadata={"error_code": self.PROCESSING_ERROR_CODE},
                 )
             )
 
@@ -2197,14 +2313,6 @@ class AgentLoop:
                 session.metadata["model"] = model_id
             self.sessions.save(session)
             return None  # TelegramChannel already confirmed via edit_message_text
-
-        # The production trusted-analysis profile must not launch model calls
-        # outside the request telemetry returned to the Web usage ledger.
-        if (
-            self.tool_profile != "trusted-analysis"
-            and len(session.get_consolidation_events()) > self.memory_window
-        ):
-            self._track_task(self._consolidate_memory(session))
 
         request_uuid = str(uuid.uuid4())
         self._set_tool_context(
@@ -2405,15 +2513,25 @@ class AgentLoop:
             active_model = migrated
 
         with self.request_router.bind_provider(routing):
-            loop_result = await self._run_agent_loop(
-                initial_messages,
-                on_progress=on_progress or _bus_progress,
-                session=session,
-                request_uuid=request_uuid,
-                model=active_model,
-                execution_key=msg.execution_key,
-                allow_tools=not interpretation_only,
-            )
+            try:
+                self._merge_persisted_session_metadata(session)
+                self.sessions.save(session)
+                loop_result = await self._run_agent_loop(
+                    initial_messages,
+                    on_progress=on_progress or _bus_progress,
+                    session=session,
+                    request_uuid=request_uuid,
+                    model=active_model,
+                    execution_key=msg.execution_key,
+                    allow_tools=not interpretation_only,
+                )
+            except asyncio.CancelledError:
+                try:
+                    self._merge_persisted_session_metadata(session)
+                    self.sessions.save(session)
+                except Exception as error:
+                    logger.error("Could not persist cancelled Runtime session ({})", type(error).__name__)
+                raise
         final_content, tools_used = loop_result
 
         terminal_error_code = loop_result.error_code
@@ -2448,6 +2566,7 @@ class AgentLoop:
             logger.info(f"Response to {msg.channel}:{msg.sender_id}: {preview}")
 
         turn_events = session.events[turn_event_start:]
+        evidence_refs = collect_evidence_refs(turn_events, self.workspace, final_content)
         tool_events = [event for event in turn_events if event.get("type") == "tool_result"]
         current_analysis_id = session.metadata.get("active_analysis_id")
         if (
@@ -2479,6 +2598,7 @@ class AgentLoop:
                     }
                     for event in tool_events
                 ],
+                source_paths=[ref["path"] for ref in evidence_refs],
             )
             session.metadata["active_analysis_id"] = analysis_id
             answer_artifacts = session.metadata.get("answer_artifacts")
@@ -2521,12 +2641,22 @@ class AgentLoop:
             "provider_retry_count": loop_result.provider_retry_count,
             "retry_count": loop_result.retry_count,
         }
+        if terminal_error_code == self.ITERATION_LIMIT_ERROR_CODE:
+            # Declares returned-call completeness only, never provider invoice coverage.
+            outbound_metadata["usage"]["returned_usage_complete"] = int(
+                loop_result.returned_usage_complete
+            )
         outbound_metadata["model"] = active_model
         outbound_metadata["runtime_provenance"] = {
             **runtime_provenance,
             "model_provider": trusted_profile.provider if trusted_profile else "unavailable",
         }
         outbound_metadata["trace_summary"] = self._trace_summary(session.events[turn_event_start:])
+        if reuse_requested and isinstance(active_analysis_id, str):
+            evidence_refs = collect_evidence_refs(
+                turn_events, self.workspace, final_content, active_analysis_id
+            )
+        outbound_metadata["evidence_refs"] = evidence_refs
         if terminal_error_code:
             outbound_metadata["error_code"] = terminal_error_code
         if msg.channel == "telegram":
@@ -2611,11 +2741,21 @@ class AgentLoop:
             }
         )
 
-        final_content, _ = await self._run_agent_loop(
-            initial_messages,
-            session=session,
-            request_uuid=request_uuid,
-        )
+        try:
+            self._merge_persisted_session_metadata(session)
+            self.sessions.save(session)
+            final_content, _ = await self._run_agent_loop(
+                initial_messages,
+                session=session,
+                request_uuid=request_uuid,
+            )
+        except asyncio.CancelledError:
+            try:
+                self._merge_persisted_session_metadata(session)
+                self.sessions.save(session)
+            except Exception as error:
+                logger.error("Could not persist cancelled Runtime session ({})", type(error).__name__)
+            raise
 
         if final_content is None:
             final_content = "Background task completed."
@@ -2647,7 +2787,15 @@ class AgentLoop:
             channel=origin_channel, chat_id=origin_chat_id, content=final_content
         )
 
-    async def _consolidate_memory(self, session, archive_all: bool = False) -> None:
+    async def _consolidate_memory(
+        self,
+        session,
+        archive_all: bool = False,
+        *,
+        model: str | None = None,
+        telemetry: RunModelTelemetry | None = None,
+        request_uuid: str | None = None,
+    ) -> None:
         """Consolidate old messages into MEMORY.md + HISTORY.md.
 
         Args:
@@ -2655,9 +2803,23 @@ class AgentLoop:
                        If False, only write to files without modifying session.
         """
         async with self._consolidation_lock:
-            await self._consolidate_memory_inner(session, archive_all)
+            await self._consolidate_memory_inner(
+                session,
+                archive_all,
+                model=model,
+                telemetry=telemetry,
+                request_uuid=request_uuid,
+            )
 
-    async def _consolidate_memory_inner(self, session, archive_all: bool = False) -> None:
+    async def _consolidate_memory_inner(
+        self,
+        session,
+        archive_all: bool = False,
+        *,
+        model: str | None = None,
+        telemetry: RunModelTelemetry | None = None,
+        request_uuid: str | None = None,
+    ) -> None:
         """Inner consolidation logic, must be called under _consolidation_lock."""
         memory = self.context.memory
         consolidation_events = session.get_consolidation_events()
@@ -2733,6 +2895,7 @@ class AgentLoop:
 Respond with ONLY valid JSON, no markdown fences."""
 
         try:
+            consolidation_model = self.consolidation_model or model or self.model
             response = await self.provider.chat(
                 messages=[
                     {
@@ -2741,8 +2904,22 @@ Respond with ONLY valid JSON, no markdown fences."""
                     },
                     {"role": "user", "content": prompt},
                 ],
-                model=self.consolidation_model or self.model,
+                model=consolidation_model,
             )
+            if telemetry is not None:
+                telemetry.record(response)
+            if request_uuid:
+                session.add_event(
+                    {
+                        "uuid": str(uuid.uuid4()),
+                        "parent_uuid": request_uuid,
+                        "type": "model_call",
+                        "model": consolidation_model,
+                        "maintenance": "memory_consolidation",
+                        "usage": response.usage,
+                        "provider_retry_count": response.retry_count,
+                    }
+                )
             text = (response.content or "").strip()
             if not text:
                 logger.warning("Memory consolidation: LLM returned empty response, skipping")

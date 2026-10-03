@@ -113,6 +113,15 @@ When working in Aura, if you finish a standalone HTML artifact meant for the use
 Only do this for finished viewable HTML artifacts, not scratch files, temporary files, or partial drafts.
 """
 
+        source_instructions = ""
+        if self.tool_profile == "trusted-analysis":
+            source_instructions = """
+When an exec script reads OCR pages or Excel files for an answer, print one final stdout line
+EVIDENCE_SOURCE_PATHS_JSON=<JSON array of data/... paths> listing only files actually used
+in the result, not exploratory files. For Python, print the line with json.dumps(sorted(paths),
+ensure_ascii=False). This lets the chat show the original files for review.
+"""
+
         file_instructions = ""
         if self.tool_profile != "readonly":
             file_instructions = """
@@ -143,6 +152,7 @@ Your workspace is at: {workspace_path}
 {delivery_instructions}
 {file_instructions}
 {optional_full_profile_instructions}
+{source_instructions}
 """
 
     def _load_bootstrap_files(self) -> str:

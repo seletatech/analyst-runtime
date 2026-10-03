@@ -7,6 +7,8 @@ on startup to prune stale sessions.
 
 import hashlib
 import json
+import os
+import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -15,7 +17,7 @@ from typing import Any
 
 from loguru import logger
 
-from analyst_runtime.utils.helpers import ensure_dir, safe_filename
+from analyst_runtime.utils.helpers import ensure_dir, fsync_directory, safe_filename
 from analyst_runtime.utils.tool_calls import sanitize_openai_tool_calls, sanitize_tool_name
 
 # Event type for compressed conversation history summaries.
@@ -72,18 +74,27 @@ class Session:
             return []
         max_messages = max(2, max_messages)
 
-        # First pass: collect IDs of tool_calls that have a matching tool_result event,
-        # so we can skip orphaned llm_response blocks in the second pass.
-        # Bedrock rejects any sequence where a tool_use block is not immediately
-        # followed by a matching tool_result block.
-        result_ids: set[str] = {
-            e["tool_use_id"]
-            for e in self.events
-            if e.get("type") == "tool_result" and e.get("tool_use_id")
-        }
+        # Scope results to their assistant batch, including older traces without UUIDs.
+        # A later batch may reuse a provider's tool ID; it cannot complete an earlier one.
+        batch_results: dict[int, list[int]] = {}
+        assistant_index: int | None = None
+        for index, event in enumerate(self.events):
+            event_type = event.get("type")
+            if event_type == "llm_response":
+                assistant_index = index if event.get("tool_calls") else None
+            elif event_type in {"user_input", "final_response", HISTORY_SUMMARY_TYPE}:
+                assistant_index = None
+            elif event_type == "tool_result" and assistant_index is not None:
+                source_uuid = event.get("source_assistant_uuid")
+                if source_uuid is not None and source_uuid != self.events[assistant_index].get(
+                    "uuid"
+                ):
+                    continue
+                batch_results.setdefault(assistant_index, []).append(index)
 
         out: list[dict[str, Any]] = []
-        for e in self.events:
+        included_results: set[int] = set()
+        for index, e in enumerate(self.events):
             t = e.get("type")
             if t == HISTORY_SUMMARY_TYPE:
                 covered = e.get("covered_turns", "?")
@@ -126,6 +137,8 @@ class Session:
                     # causes Bedrock to reject the entire request; skip it so the
                     # conversation can continue cleanly from the final_response.
                     call_ids = {tc.get("id") for tc in tool_calls if tc.get("id")}
+                    results = batch_results.get(index, [])
+                    result_ids = {self.events[result].get("tool_use_id") for result in results}
                     if not call_ids.issubset(result_ids):
                         logger.warning(
                             "Skipping orphaned llm_response in history: "
@@ -133,6 +146,11 @@ class Session:
                             call_ids - result_ids,
                         )
                         continue
+                    included_results.update(
+                        result
+                        for result in results
+                        if self.events[result].get("tool_use_id") in call_ids
+                    )
                 entry: dict[str, Any] = {"role": "assistant", "content": e.get("content") or ""}
                 if tool_calls:
                     entry["tool_calls"] = sanitize_openai_tool_calls(tool_calls)
@@ -140,6 +158,8 @@ class Session:
                     entry["reasoning_content"] = e["reasoning"]
                 out.append(entry)
             elif t == "tool_result":
+                if index not in included_results:
+                    continue
                 out.append({
                     "role": "tool",
                     "tool_call_id": e.get("tool_use_id", ""),
@@ -339,20 +359,39 @@ class SessionManager:
             return None
 
     def save(self, session: Session) -> None:
-        """Save a session to disk."""
+        """Replace the last complete snapshot only after its successor is flushed."""
         path = self._get_session_path(session.key)
 
-        with open(path, "w") as f:
-            metadata_line = {
-                "_type": "metadata",
-                "created_at": session.created_at.isoformat(),
-                "updated_at": session.updated_at.isoformat(),
-                "metadata": session.metadata,
-                "last_consolidated": session.last_consolidated
-            }
-            f.write(json.dumps(metadata_line) + "\n")
-            for event in session.events:
-                f.write(json.dumps(event) + "\n")
+        temporary_path: Path | None = None
+        try:
+            descriptor, temporary_name = tempfile.mkstemp(
+                dir=self.sessions_dir,
+                prefix=f".{path.stem}.",
+                suffix=".tmp",
+            )
+            temporary_path = Path(temporary_name)
+            # ponytail: rewrite each snapshot; use an append journal if session size affects latency.
+            with os.fdopen(descriptor, "w", encoding="utf-8") as f:
+                metadata_line = {
+                    "_type": "metadata",
+                    "created_at": session.created_at.isoformat(),
+                    "updated_at": session.updated_at.isoformat(),
+                    "metadata": session.metadata,
+                    "last_consolidated": session.last_consolidated,
+                }
+                f.write(json.dumps(metadata_line) + "\n")
+                for event in session.events:
+                    f.write(json.dumps(event) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            temporary_path.replace(path)
+            fsync_directory(self.sessions_dir)
+        except BaseException:
+            self.invalidate(session.key)
+            raise
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
 
         self._cache[session.key] = session
 

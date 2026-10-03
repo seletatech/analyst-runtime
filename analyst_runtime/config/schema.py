@@ -202,7 +202,7 @@ class AgentDefaults(Base):
     max_tokens: int = 8192
     temperature: float = 0.7
     max_tool_iterations: int = 500
-    memory_window: int = 50
+    memory_window: int = 20
     max_concurrent_messages: int = 4
     context_compact_threshold: int = 80_000
     context_compact_keep_messages: int = 12

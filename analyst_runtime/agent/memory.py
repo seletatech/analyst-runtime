@@ -6,6 +6,8 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
+from analyst_runtime.utils.helpers import fsync_directory as _fsync_directory
+
 MAX_MEMORY_CONTEXT_CHARS = 12_000
 _GENERIC_MEMORY_TRUNCATED = "\n\n[generic memory truncated]"
 _MEMORY_LOCKS_GUARD = threading.Lock()
@@ -19,14 +21,6 @@ class ProtectedMemorySection:
     name: str
     start_marker: str
     end_marker: str
-
-
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 def _ensure_directory_durable(path: Path) -> Path:

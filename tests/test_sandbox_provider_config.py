@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from analyst_runtime.cli.commands import (
@@ -18,6 +19,71 @@ from analyst_runtime.providers.registry import (
     resolve_model_profile,
     sandbox_provider_names,
 )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("outcome", "expected"),
+    [
+        (200, True),
+        (204, True),
+        (401, False),
+        (403, False),
+        (429, None),
+        (500, None),
+        (503, None),
+        (302, None),
+        (404, None),
+        ("network", None),
+        ("timeout", None),
+        ("unsupported", None),
+        ("missing-base", None),
+    ],
+)
+async def test_credential_verification_distinguishes_rejection_from_unavailable(
+    monkeypatch, outcome: int | str, expected: bool | None,
+) -> None:
+    calls = []
+    provider_name = "nebius"
+    spec = find_by_name(provider_name)
+    assert spec is not None
+
+    class MockClient:
+        def __init__(self, *, trust_env):
+            assert trust_env is False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, *, headers, follow_redirects, timeout):
+            calls.append(url)
+            assert url == f"{spec.default_api_base.rstrip('/')}/models"
+            assert headers == {"Authorization": "Bearer synthetic-verification-key"}
+            assert follow_redirects is False
+            assert timeout == 10.0
+            if outcome == "network":
+                raise httpx.ConnectError("Synthetic connection failure")
+            if outcome == "timeout":
+                raise httpx.ReadTimeout("Synthetic verification timeout")
+            return httpx.Response(outcome)
+
+    monkeypatch.setattr(litellm_provider_module.httpx, "AsyncClient", MockClient)
+    if outcome == "unsupported":
+        provider_name = "future-unsupported-provider"
+    elif outcome == "missing-base":
+        monkeypatch.setattr(
+            litellm_provider_module,
+            "find_by_name",
+            lambda _name: SimpleNamespace(accepts_request_credentials=True, default_api_base=""),
+        )
+    result = await LiteLLMProvider().verify_request_credentials(
+        api_key="synthetic-verification-key", provider=provider_name,
+    )
+    assert result is expected
+    assert len(calls) == (0 if outcome in {"unsupported", "missing-base"} else 1)
 
 
 def test_provider_catalog_drives_runtime_provider_capabilities() -> None:
