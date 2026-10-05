@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 WORKSPACE_CONFIG_FILE = "workspace.json"
 
@@ -22,6 +22,7 @@ class WorkspaceConfiguration:
     """Configuration that travels with a product workspace."""
 
     trusted_gateway: TrustedGatewayConfiguration | None = None
+    reference_files: tuple[str, ...] = ()
 
     @classmethod
     def load(cls, workspace: Path) -> WorkspaceConfiguration:
@@ -33,6 +34,18 @@ class WorkspaceConfiguration:
             raise ValueError(f"{path} must contain a JSON object")
         if data.get("schema_version") != 1:
             raise ValueError(f"{path} schema_version must be 1")
+        references = data.get("reference_files", [])
+        if not isinstance(references, list) or len(references) > 4:
+            raise ValueError("reference_files must be a list of at most four Markdown paths")
+        for reference in references:
+            if (not isinstance(reference, str) or len(reference) > 240
+                or "\\" in reference or not reference.endswith(".md")
+                or any(ord(character) < 32 or ord(character) == 127 for character in reference)
+                or PurePosixPath(reference).is_absolute()
+                or any(not part or part.startswith(".") for part in reference.split("/"))):
+                raise ValueError("reference_files must contain relative non-hidden Markdown paths")
+        if len(set(references)) != len(references):
+            raise ValueError("reference_files must not contain duplicates")
         trusted_gateway = data.get("trusted_gateway")
         parsed_gateway = None
         if trusted_gateway is not None:
@@ -50,4 +63,5 @@ class WorkspaceConfiguration:
             )
         return cls(
             trusted_gateway=parsed_gateway,
+            reference_files=tuple(references),
         )
