@@ -5,6 +5,15 @@ from datetime import datetime
 from pathlib import Path
 
 
+def fsync_directory(path: Path) -> None:
+    """Flush directory entries after an atomic replacement."""
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def ensure_dir(path: Path) -> Path:
     """Ensure a directory exists, creating it if necessary."""
     path.mkdir(parents=True, exist_ok=True)

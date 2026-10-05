@@ -111,6 +111,45 @@ class _AnalysisAndProcessExec(_StaticAnalysisExec):
         return json.dumps({"status": "complete", "finding": "process evidence"})
 
 
+@pytest.mark.asyncio
+async def test_processing_save_failure_returns_safe_structured_error_without_model_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bus = MessageBus()
+    provider = _SequenceProvider([])
+    agent = AgentLoop(
+        bus=bus, provider=provider, workspace=tmp_path, tool_profile="trusted-analysis"
+    )
+
+    def fail_save(_session: Any) -> None:
+        raise OSError("synthetic-secret-path-and-credential")
+
+    monkeypatch.setattr(agent.sessions, "save", fail_save)
+    await agent._process_and_publish_message(_message("save-failure"))
+    response = await asyncio.wait_for(bus.consume_outbound(), timeout=1)
+
+    assert provider.calls == []
+    assert response.metadata.get("error_code") == "ANALYST-RUNTIME-PROCESSING-001"
+    assert "synthetic-secret-path-and-credential" not in response.content
+    assert "ANALYST-RUNTIME-PROCESSING-001" in response.content
+
+
+def test_reused_tool_call_id_keeps_both_long_result_archives(tmp_path: Path) -> None:
+    agent = AgentLoop(bus=MessageBus(), provider=_SequenceProvider([]), workspace=tmp_path)
+    first_result = "A" * 16_001 + "first distinct tail"
+    second_result = "B" * 16_001 + "second distinct tail"
+
+    first_preview = agent._save_tool_result("reused-call", "read_file", first_result)
+    first_path = tmp_path / first_preview.rsplit("full result at ", 1)[1].removesuffix("]")
+    second_preview = agent._save_tool_result("reused-call", "read_file", second_result)
+    second_path = tmp_path / second_preview.rsplit("full result at ", 1)[1].removesuffix("]")
+
+    assert first_path.read_text() == first_result
+    assert second_path.read_text() == second_result
+    assert first_path != second_path
+
+
 @pytest.mark.parametrize(
     "result",
     [
@@ -234,6 +273,52 @@ def test_self_contained_confirmation_persists_user_supplied_semantics(tmp_path: 
     assert "- 时间范围：请确认" not in memory
 
 
+def test_natural_language_confirmation_persists_the_complete_card(tmp_path: Path) -> None:
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=_SequenceProvider([]),
+        workspace=tmp_path,
+        tool_profile="trusted-analysis",
+    )
+    question = "2026年一到六月份涂布总米数有多少？"
+    answer = (
+        "1.所有产品\n"
+        "2.2026年1月1号到6月30号，按涂布收卷/产出完成日期归属\n"
+        "3.逐条记录累加涂布产出米数，只计涂布工序产出"
+    )
+    assert agent._remember_confirmed_semantics(
+        answer,
+        [
+            {"role": "user", "content": question},
+            {
+                "role": "assistant",
+                "content": "## 待确认的定义与口径\n- 产品范围\n- 时间范围\n- 统计口径",
+            },
+        ],
+    ) == question
+    memory = (tmp_path / "memory" / "MEMORY.md").read_text(encoding="utf-8")
+    assert answer in memory
+
+
+def test_memory_hit_does_not_append_first_turn_clarification(tmp_path: Path) -> None:
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=_SequenceProvider([]),
+        workspace=tmp_path,
+        tool_profile="trusted-analysis",
+    )
+    question = "2026年一到六月份涂布总米数有多少？"
+    agent._remember_confirmed_semantics(
+        "确认并按上述口径分析",
+        [
+            {"role": "user", "content": question},
+            {"role": "assistant", "content": "待确认的定义与口径：所有产品；2026-01 至 2026-06"},
+        ],
+    )
+    assert agent._confirmed_semantics_reuse_instruction(question)
+    assert agent._semantic_clarification_instruction(question, []) is None
+
+
 def test_second_clarification_reply_forces_analysis_to_start(tmp_path: Path) -> None:
     agent = AgentLoop(
         bus=MessageBus(),
@@ -355,6 +440,66 @@ async def test_trusted_run_model_and_byok_are_request_scoped_and_never_echoed(
     assert response is not None
     assert "_provider_credential" not in response.metadata
     assert "byok-secret" not in json.dumps(response.metadata)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel", ["web", "system"])
+async def test_pending_model_input_is_visible_to_a_fresh_session_manager(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    channel: str,
+) -> None:
+    monkeypatch.setenv("DEEPSEEK_V4_FLASH_PROVIDER", "deepseek")
+    (tmp_path / "workspace.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "trusted_gateway": {"project_id": "example", "runtime": "example"},
+        })
+    )
+    pending = asyncio.Event()
+    provider = _SequenceProvider([])
+
+    async def pending_chat(**_kwargs: Any) -> LLMResponse:
+        pending.set()
+        await asyncio.Event().wait()
+        raise AssertionError("Synthetic pending provider must be cancelled")
+
+    monkeypatch.setattr(provider, "chat", pending_chat)
+    agent = AgentLoop(
+        bus=MessageBus(), provider=provider, workspace=tmp_path, tool_profile="trusted-analysis"
+    )
+    message = InboundMessage(
+        channel=channel,
+        sender_id="synthetic",
+        chat_id="web:conversation" if channel == "system" else "chat-run",
+        conversation_id="conversation",
+        run_id="run",
+        content="Preserve this synthetic input",
+        metadata={
+            "project_id": "example",
+            "runtime": "example",
+            "model_profile_id": "deepseek-v4-flash-0731",
+            "_provider_credential": {
+                "api_key": "synthetic-byok-secret", "provider": "deepseek", "source": "byok"
+            },
+        },
+    )
+    task = asyncio.create_task(agent._process_message(message))
+    try:
+        await asyncio.wait_for(pending.wait(), timeout=1)
+        assert not task.done()
+        restored = SessionManager(tmp_path).get_or_create("web:conversation")
+        assert [event["type"] for event in restored.events] == ["user_input", "prompt_snapshot"]
+        assert "Preserve this synthetic input" in restored.events[0]["content"]
+        assert restored.events[1]["parent_uuid"] == restored.events[0]["uuid"]
+        assert "_provider_credential" not in message.metadata
+        assert "synthetic-byok-secret" not in "".join(
+            path.read_text() for path in (tmp_path / "sessions").glob("*.jsonl")
+        )
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
 
 @pytest.mark.asyncio
@@ -657,7 +802,20 @@ async def test_runtime_trace_records_context_compaction_and_retry(tmp_path: Path
 
     assert response is not None
     trace = response.metadata["trace_summary"]
-    assert [event["type"] for event in trace].count("model_call") == 2
+    assert [event["usage"] for event in trace if event["type"] == "model_call"] == [
+        {"prompt_tokens": 100, "completion_tokens": 5},
+        {"prompt_tokens": 20, "completion_tokens": 3},
+        {"prompt_tokens": 30, "completion_tokens": 2},
+    ]
+    restored = SessionManager(tmp_path).get_or_create("web:trace-run")
+    maintenance = [
+        event for event in restored.events if event.get("maintenance") == "context_compaction"
+    ]
+    assert len(maintenance) == 1
+    assert maintenance[0]["usage"] == {"prompt_tokens": 20, "completion_tokens": 3}
+    assert response.metadata["usage"]["prompt_tokens"] == 150
+    assert response.metadata["usage"]["completion_tokens"] == 10
+    assert response.metadata["usage"]["model_call_count"] == 3
     assert any(
         event["type"] == "context_compaction" and event["prompt_tokens"] == 100 for event in trace
     )
@@ -853,8 +1011,11 @@ async def test_runtime_uses_the_profile_deployment_provider_for_one_run(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("verdict", [True, False, None])
 async def test_runtime_verifies_provider_credentials_without_echoing_secret(
     tmp_path: Path,
+    monkeypatch,
+    verdict: bool | None,
 ) -> None:
     (tmp_path / "workspace.json").write_text(
         json.dumps(
@@ -869,6 +1030,13 @@ async def test_runtime_verifies_provider_credentials_without_echoing_secret(
         encoding="utf-8",
     )
     provider = _SequenceProvider([])
+
+    async def verify_credentials(*, api_key, provider):
+        provider_instance.verified_credentials.append((api_key, provider))
+        return verdict
+
+    provider_instance = provider
+    monkeypatch.setattr(provider, "verify_request_credentials", verify_credentials)
     agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path)
     message = InboundMessage(
         channel="web",
@@ -893,9 +1061,44 @@ async def test_runtime_verifies_provider_credentials_without_echoing_secret(
     assert response is not None
     assert response.metadata == {
         "control": "provider_credential_verified",
-        "verified": True,
+        "verified": verdict,
     }
     assert "valid-key" not in json.dumps(response.metadata)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("trusted_gateway", [None, {"project_id": "other", "runtime": "other"}])
+async def test_untrusted_profile_resolution_never_enters_the_agent_loop(
+    tmp_path: Path, trusted_gateway: dict | None,
+) -> None:
+    (tmp_path / "workspace.json").write_text(
+        json.dumps({"schema_version": 1, "trusted_gateway": trusted_gateway})
+    )
+    provider = _SequenceProvider([LLMResponse(content="done")])
+    agent = AgentLoop(
+        bus=MessageBus(), provider=provider, workspace=tmp_path, tool_profile="trusted-analysis"
+    )
+    message = InboundMessage(
+        channel="web", sender_id="profile-run", chat_id="profile-run", content="",
+        metadata={
+            "control": "resolve_model_profile",
+            "model_profile_id": "glm-5.3-flash",
+            "project_id": "example-product",
+            "runtime": "example-runtime",
+            "_provider_credential": {"api_key": "synthetic-secret", "provider": "nebius"},
+        },
+    )
+
+    response = await agent._process_message(message)
+
+    assert provider.calls == []
+    assert response is not None
+    assert response.metadata == {
+        "control": "model_profile_rejected", "model_profile_id": "glm-5.3-flash"
+    }
+    assert "_provider_credential" not in message.metadata
+    assert "synthetic-secret" not in json.dumps(response.metadata)
+    assert not list((tmp_path / "sessions").glob("*.jsonl"))
 
 
 @pytest.mark.asyncio
@@ -1703,15 +1906,18 @@ def test_deepseek_cache_usage_is_preserved_and_logged(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_litellm_reports_transport_retries(monkeypatch) -> None:
+@pytest.mark.parametrize("succeeds_on", [2, 3, None])
+async def test_litellm_reports_transport_retries(monkeypatch, succeeds_on: int | None) -> None:
     from analyst_runtime.providers import litellm_provider
 
     attempts = 0
+    captured: list[dict[str, Any]] = []
 
     async def fake_completion(**kwargs):
         nonlocal attempts
         attempts += 1
-        if attempts == 1:
+        captured.append(kwargs)
+        if succeeds_on is None or attempts < succeeds_on:
             raise RuntimeError("Unable to get json response - Expecting value")
         message = SimpleNamespace(content="recovered", tool_calls=None)
         choice = SimpleNamespace(message=message, finish_reason="stop")
@@ -1723,8 +1929,15 @@ async def test_litellm_reports_transport_retries(monkeypatch) -> None:
 
     response = await provider.chat(messages=[{"role": "user", "content": "analyze"}])
 
-    assert attempts == 2
-    assert response.retry_count == 1
+    assert attempts == (succeeds_on or 3)
+    assert response.retry_count == attempts - 1
+    assert all(call.get("num_retries") == 0 for call in captured)
+    assert all(call.get("max_retries") == 0 for call in captured)
+    if succeeds_on is None:
+        assert response.finish_reason == "error"
+        assert response.error_code == "ANALYST-RUNTIME-PROVIDER-001"
+    else:
+        assert response.content == "recovered"
 
 
 @pytest.mark.asyncio
@@ -1858,16 +2071,25 @@ async def test_agent_loop_counts_provider_transport_retries(tmp_path: Path) -> N
 @pytest.mark.asyncio
 async def test_active_context_is_compacted_after_token_threshold(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = _SequenceProvider(
         [
             LLMResponse(
                 content="partial result",
                 finish_reason="length",
-                usage={"prompt_tokens": 11},
+                usage={"prompt_tokens": 11, "completion_tokens": 1},
             ),
-            LLMResponse(content="preserved facts and unfinished work", finish_reason="stop"),
-            LLMResponse(content="finished after compacting", finish_reason="stop"),
+            LLMResponse(
+                content="preserved facts and unfinished work",
+                finish_reason="stop",
+                usage={"prompt_tokens": 20, "completion_tokens": 3},
+            ),
+            LLMResponse(
+                content="finished after compacting",
+                finish_reason="stop",
+                usage={"prompt_tokens": 30, "completion_tokens": 2},
+            ),
         ]
     )
     agent = AgentLoop(
@@ -1879,17 +2101,53 @@ async def test_active_context_is_compacted_after_token_threshold(
         consolidation_model="different-maintenance-model",
     )
 
-    loop_result = await agent._run_agent_loop(
-        [
-            {"role": "system", "content": "system rules"},
-            {"role": "user", "content": "OLD RAW CONTEXT"},
-        ]
+    session = agent.sessions.get_or_create("web:compaction-checkpoint")
+    session.add_event(
+        {"type": "user_input", "uuid": "compaction-input", "content": "OLD RAW CONTEXT"}
     )
+    agent.sessions.save(session)
+    third_call_started = asyncio.Event()
+    release_third = asyncio.Event()
+    provider_chat = provider.chat
+
+    async def pending_third_call(**kwargs: Any) -> LLMResponse:
+        if len(provider.calls) == 2:
+            third_call_started.set()
+            await release_third.wait()
+        return await provider_chat(**kwargs)
+
+    monkeypatch.setattr(provider, "chat", pending_third_call)
+    task = asyncio.create_task(
+        agent._run_agent_loop(
+            [
+                {"role": "system", "content": "system rules"},
+                {"role": "user", "content": "OLD RAW CONTEXT"},
+            ],
+            session=session,
+            request_uuid="compaction-input",
+        )
+    )
+    try:
+        await asyncio.wait_for(third_call_started.wait(), timeout=1)
+        assert not task.done()
+        restored = SessionManager(tmp_path).get_or_create(session.key)
+        returned = [event for event in restored.events if event.get("type") == "model_call"]
+        assert [event["usage"] for event in returned] == [
+            {"prompt_tokens": 11, "completion_tokens": 1},
+            {"prompt_tokens": 20, "completion_tokens": 3},
+        ]
+        assert any(event.get("type") == "context_compaction" for event in restored.events)
+        assert not any(event.get("type") == "final_response" for event in restored.events)
+        release_third.set()
+        loop_result = await task
+    finally:
+        release_third.set()
+        await asyncio.gather(task, return_exceptions=True)
 
     assert loop_result.content == "finished after compacting"
     assert loop_result.model_call_count == 3
     assert loop_result.retry_count == 1
-    assert loop_result.usage == {"prompt_tokens": 11}
+    assert loop_result.usage == {"prompt_tokens": 61, "completion_tokens": 6}
     assert provider.models == ["test-model", "test-model", "test-model"]
     final_request = provider.calls[2]
     rendered = str(final_request)
@@ -1938,6 +2196,46 @@ async def test_trusted_analysis_does_not_launch_unmetered_model_maintenance(
     assert response is not None
     assert len(provider.calls) == 1
     assert response.metadata["usage"]["model_call_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_trusted_analysis_consolidation_is_accounted_when_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANALYST_RUNTIME_ENABLE_MEMORY_CONSOLIDATION", "true")
+    provider = _SequenceProvider(
+        [
+            LLMResponse(content="finished", finish_reason="stop"),
+            LLMResponse(
+                content=json.dumps(
+                    {"history_entry": "[2026-09-19 00:00] remembered", "memory_update": ""}
+                ),
+                finish_reason="stop",
+                usage={"prompt_tokens": 3, "completion_tokens": 2},
+            ),
+        ]
+    )
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=provider,
+        workspace=tmp_path,
+        tool_profile="trusted-analysis",
+        memory_window=1,
+        consolidation_interval=0,
+    )
+    session = agent.sessions.get_or_create("web:metered-chat")
+    session.add_event({"content": "old question", "type": "user_input", "uuid": "old-user"})
+    session.add_event(
+        {"content": "old answer", "type": "final_response", "uuid": "old-answer"}
+    )
+
+    response = await agent._process_message(_message("metered-chat"))
+
+    assert response is not None
+    assert len(provider.calls) == 2
+    assert response.metadata["usage"]["model_call_count"] == 2
+    assert response.metadata["usage"]["prompt_tokens"] == 3
+    assert "memory_consolidation" in str(session.events)
 
 
 @pytest.mark.asyncio
@@ -2009,3 +2307,35 @@ async def test_short_but_oversized_exchange_is_fully_compacted(tmp_path: Path) -
     ]
     assert "summary of the large result" in str(compacted)
     assert "very large result" not in str(compacted)
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("usages", "retries", "complete"),
+    [
+        ([{"prompt_tokens": 10, "completion_tokens": 2}] * 5, 0, 1),
+        ([{"prompt_tokens": 10, "completion_tokens": 2}], 0, 1),
+        ([{}], 0, 0),
+        ([{"prompt_tokens": 10, "completion_tokens": 2}, {}], 0, 0),
+        ([{"prompt_tokens": 10, "completion_tokens": 2}], 1, 0),
+        ([{"prompt_tokens": -1, "completion_tokens": 2}], 0, 0),
+        ([{"prompt_tokens": True, "completion_tokens": 2}], 0, 0),
+    ],
+)
+async def test_iteration_terminal_flags_complete_returned_usage(
+    tmp_path: Path, usages: list[dict[str, int]], retries: int, complete: int,
+) -> None:
+    provider = _SequenceProvider([
+        LLMResponse(
+            content=None, finish_reason="tool_calls", usage=usage,
+            retry_count=retries,
+            tool_calls=[ToolCallRequest(id=f"read-{index}", name="exec",
+                                        arguments={"command": "printf inspected"})],
+        ) for index, usage in enumerate(usages)
+    ])
+    agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path,
+                      max_iterations=len(usages), tool_profile="trusted-analysis")
+    response = await agent._process_message(_message("iteration-usage"))
+    assert response is not None
+    assert response.metadata["error_code"] == "ANALYST-RUNTIME-ITERATION-001"
+    assert len(provider.calls) == len(usages)
+    assert response.metadata["usage"].get("returned_usage_complete") == complete

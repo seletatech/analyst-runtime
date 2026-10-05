@@ -115,6 +115,16 @@ An active workspace can contain:
 - `SOUL.md` — agent identity and communication style
 - `AGENTS.md` — operating instructions and domain rules
 - `workspace.json` — trusted gateway identity and runtime policy
+
+An optional `reference_files` list in `workspace.json` declares Markdown references that
+must be available in every turn's context, for example `["data/README.md"]`. The Runtime
+reads their exact UTF-8 contents before model execution and includes each path, SHA256 and
+text in the existing prompt snapshot as untrusted reference data. These files do not define
+operating policy or introduce another agent loop. Changes are reread on the next turn.
+Paths must be relative, non-hidden and contained in the workspace; at most four files,
+32 KiB each and64 KiB combined. Missing, empty, invalid or oversized references fail before
+contacting a provider rather than silently dropping definitions. Omit the list to preserve
+existing workspaces. Product deployments own the references and their contents.
 - `skills/<name>/SKILL.md` — workspace-specific capabilities
 - `memory/` and `sessions/` — runtime-owned state
 

@@ -1,11 +1,11 @@
 """Web channel: bridges FastAPI gateway to Analyst Runtime internal bus via HTTP polling.
 
 Message flow:
-  FastAPI durable bridge store
+  FastAPI in-process bridge queues
       <- GET /internal/sandbox/{id}/inbound  (Analyst Runtime long-polls)
   Analyst Runtime AgentLoop
       -> POST /internal/sandbox/{id}/outbound (Analyst Runtime posts reply)
-      -> durable bridge store -> WebSocket -> browser
+      -> bridge response stream -> browser
 
 The channel uses HTTP long-polling so it works across the Docker process
 boundary (container <-> host). The ExternalBus asyncio.Queue approach only
@@ -108,6 +108,7 @@ class WebChannel(BaseChannel):
         )
         self._listener_task: asyncio.Task | None = None
         self._accepted_request_ids: OrderedDict[str, None] = OrderedDict()
+        self._runtime_instance_id = uuid4().hex
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -234,7 +235,10 @@ class WebChannel(BaseChannel):
             try:
                 async with httpx.AsyncClient(trust_env=False) as client:
                     resp = await client.get(
-                        url, headers=headers, timeout=35.0, params={"timeout": 30}
+                        url,
+                        headers=headers,
+                        timeout=35.0,
+                        params={"timeout": 30, "runtime_instance_id": self._runtime_instance_id},
                     )
 
                 if resp.status_code == 200:

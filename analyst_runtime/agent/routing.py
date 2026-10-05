@@ -81,7 +81,7 @@ class RuntimeRequestRouter:
     ) -> OutboundMessage | None:
         control = msg.metadata.get("control")
         if control == "verify_provider_credential":
-            verified = False
+            verified = None
             if credential is not None:
                 api_key = credential.get("api_key")
                 provider_name = credential.get("provider")
@@ -96,9 +96,15 @@ class RuntimeRequestRouter:
                 verified=verified,
             )
 
-        if control != "resolve_model_profile" or not self.is_trusted_gateway(msg):
+        if control != "resolve_model_profile":
             return None
         profile_id = msg.metadata.get("model_profile_id")
+        if not self.is_trusted_gateway(msg):
+            return self._control_message(
+                msg,
+                control="model_profile_rejected",
+                model_profile_id=str(profile_id),
+            )
         try:
             profile = resolve_model_profile(str(profile_id))
         except ValueError:

@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from analyst_runtime.agent.loop import AgentLoop
 
 # ---------------------------------------------------------------------------
@@ -62,7 +64,7 @@ class TestSaveToolResult:
         # Must contain the truncation marker
         assert "chars total" in out, "Truncation marker missing from long result"
         # Full archive file must exist
-        archive = tmp_path / "sessions" / "tool-results" / "tc_002.txt"
+        archive = tmp_path / out.rsplit("full result at ", 1)[1].removesuffix("]")
         assert archive.exists(), "Archive file should be written for long results"
         assert archive.read_text() == long_result, "Archive must contain full result"
 
@@ -86,10 +88,15 @@ class TestSaveToolResult:
             "Old opaque reference format detected — breaks cross-turn tool chains"
         )
 
-    def test_error_result_stored_inline(self, tmp_path: Path) -> None:
-        """Error strings (short) must be stored inline so LLM sees the error."""
+    @pytest.mark.parametrize(
+        "error",
+        ["Error: Tool 'exec' timed out after 30s", "x" * 16_001 + "\ud800"],
+        ids=["short-error", "unencodable-long-result"],
+    )
+    def test_error_result_stored_inline(self, tmp_path: Path, error: str) -> None:
+        """Short errors and unarchivable results remain fully visible inline."""
         loop = _make_loop(tmp_path)
-        error = "Error: Tool 'exec' timed out after 30s"
         out = loop._save_tool_result("tc_004", "exec", error)
 
-        assert out == error, "Short error results must be inline for cross-turn visibility"
+        assert out == error, "Results must remain inline when they cannot be archived"
+        assert "full result at" not in out
