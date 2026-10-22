@@ -79,6 +79,7 @@ class AnalysisArtifactStore:
         confirmed_semantics_sha256: str,
         tools_used: list[str],
         evidence: list[dict[str, Any]],
+        source_paths: list[str] | None = None,
     ) -> str:
         if not answer.strip() or not evidence:
             raise AnalysisArtifactError("answer artifact requires an answer and evidence")
@@ -95,6 +96,7 @@ class AnalysisArtifactStore:
                 "tools_used": tools_used,
                 "evidence": evidence,
             },
+            "source_coverage": {"files": source_paths or []},
             "validation": {
                 "passed": True,
                 "all_tool_calls_completed": True,

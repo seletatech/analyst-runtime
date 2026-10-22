@@ -20,6 +20,7 @@ from analyst_runtime.agent.analysis_context import (
     AnalysisArtifactStore,
 )
 from analyst_runtime.agent.context import ContextBuilder
+from analyst_runtime.agent.evidence_refs import collect_evidence_refs
 from analyst_runtime.agent.memory import ProtectedMemorySection
 from analyst_runtime.agent.routing import RoutingError, RuntimeRequestRouter
 from analyst_runtime.agent.steering import SteeringCoordinator
@@ -63,6 +64,7 @@ _SELF_CONTAINED_SEMANTICS_CONFIRMATION_RE = re.compile(
     r"\s*确认以下口径并分析\s*[：:]\s*\S.+\s*",
     re.DOTALL,
 )
+_SEMANTICS_LIST_ITEM_RE = re.compile(r"(?m)^\s*(?:\d+[.)、]|[-•])\s*\S+")
 _ARTIFACT_ID_RE = re.compile(r"[a-z][a-z0-9-]{0,63}:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 
 ProgressTool = dict[str, str]
@@ -305,7 +307,7 @@ class AgentLoop:
         max_iterations: int = 500,
         temperature: float = 0.7,
         max_tokens: int = 4096,
-        memory_window: int = 50,
+        memory_window: int = 20,
         brave_api_key: str | None = None,
         exec_config: ExecToolConfig | None = None,
         cron_service: CronService | None = None,
@@ -375,6 +377,13 @@ class AgentLoop:
         self.compress_keep_turns = compress_keep_turns
         self.consolidation_interval = consolidation_interval
         self.consolidation_model = consolidation_model
+        self.enable_memory_consolidation = (
+            tool_profile != "trusted-analysis"
+            or os.environ.get("ANALYST_RUNTIME_ENABLE_MEMORY_CONSOLIDATION", "")
+            .strip()
+            .lower()
+            in {"1", "true", "yes", "on"}
+        )
         self.max_concurrent_messages = max(1, max_concurrent_messages)
         self.context_compact_threshold = max(1, context_compact_threshold)
         self.context_compact_keep_messages = max(1, context_compact_keep_messages)
@@ -410,8 +419,9 @@ class AgentLoop:
         supplies_complete_card = bool(
             _SELF_CONTAINED_SEMANTICS_CONFIRMATION_RE.fullmatch(user_message)
         )
+        supplies_natural_card = self._looks_like_complete_natural_semantics_answer(user_message)
         if self.tool_profile != "trusted-analysis" or not (
-            confirms_previous_card or supplies_complete_card
+            confirms_previous_card or supplies_complete_card or supplies_natural_card
         ):
             return None
         proposal_index = next(
@@ -427,7 +437,7 @@ class AgentLoop:
         if proposal_index is None:
             return None
         proposal = str(history[proposal_index].get("content") or "").strip()
-        confirmed_semantics = user_message.strip() if supplies_complete_card else proposal
+        confirmed_semantics = user_message.strip() if (supplies_complete_card or supplies_natural_card) else proposal
         question = next(
             (
                 str(message.get("content") or "").strip()
@@ -468,6 +478,26 @@ class AgentLoop:
         )
         return question
 
+    @staticmethod
+    def _looks_like_complete_natural_semantics_answer(user_message: str) -> bool:
+        """Recognize a self-contained natural-language answer without a magic phrase.
+
+        Clarification replies remain in the current conversation unless they look
+        like a complete multi-part card.  This deliberately accepts the numbered
+        answers used by the product and a long, clause-rich one-line answer, while
+        rejecting questions and short partial replies.
+        """
+        normalized = re.sub(r"\s+", " ", user_message).strip()
+        if len(normalized) < 20 or any(mark in normalized for mark in ("？", "?")):
+            return False
+        if len(_SEMANTICS_LIST_ITEM_RE.findall(user_message)) >= 2:
+            return True
+        clause_count = sum(normalized.count(mark) for mark in ("；", ";", "：", ":"))
+        return clause_count >= 2 and any(
+            marker in normalized
+            for marker in ("范围", "日期", "按", "只计", "排除", "所有", "单位", "口径")
+        )
+
     def _semantic_clarification_instruction(
         self,
         user_message: str,
@@ -476,7 +506,14 @@ class AgentLoop:
         if self.tool_profile != "trusted-analysis" or (
             _EXPLICIT_SEMANTICS_CONFIRMATION_RE.fullmatch(user_message)
             or _SELF_CONTAINED_SEMANTICS_CONFIRMATION_RE.fullmatch(user_message)
+            or self._looks_like_complete_natural_semantics_answer(user_message)
         ):
+            return None
+        # A cross-conversation memory hit already proves that the complete
+        # semantic card was confirmed.  Do not append the first-turn
+        # clarification policy as well: the two system instructions conflict,
+        # and the later clarification instruction can make the model ask again.
+        if self._confirmed_semantics_sha256(user_message) is not None:
             return None
         proposal_index = next(
             (
@@ -1763,6 +1800,17 @@ class AgentLoop:
                             "finish_reason": response.finish_reason,
                         }
                     )
+                if (
+                    self.enable_memory_consolidation
+                    and session
+                    and len(session.get_consolidation_events()) > self.memory_window
+                ):
+                    await self._consolidate_memory(
+                        session,
+                        model=active_model,
+                        telemetry=model_telemetry,
+                        request_uuid=request_uuid,
+                    )
                 break
 
         return AgentLoopResult(
@@ -2198,14 +2246,6 @@ class AgentLoop:
             self.sessions.save(session)
             return None  # TelegramChannel already confirmed via edit_message_text
 
-        # The production trusted-analysis profile must not launch model calls
-        # outside the request telemetry returned to the Web usage ledger.
-        if (
-            self.tool_profile != "trusted-analysis"
-            and len(session.get_consolidation_events()) > self.memory_window
-        ):
-            self._track_task(self._consolidate_memory(session))
-
         request_uuid = str(uuid.uuid4())
         self._set_tool_context(
             msg.channel,
@@ -2448,6 +2488,7 @@ class AgentLoop:
             logger.info(f"Response to {msg.channel}:{msg.sender_id}: {preview}")
 
         turn_events = session.events[turn_event_start:]
+        evidence_refs = collect_evidence_refs(turn_events, self.workspace, final_content)
         tool_events = [event for event in turn_events if event.get("type") == "tool_result"]
         current_analysis_id = session.metadata.get("active_analysis_id")
         if (
@@ -2479,6 +2520,7 @@ class AgentLoop:
                     }
                     for event in tool_events
                 ],
+                source_paths=[ref["path"] for ref in evidence_refs],
             )
             session.metadata["active_analysis_id"] = analysis_id
             answer_artifacts = session.metadata.get("answer_artifacts")
@@ -2527,6 +2569,11 @@ class AgentLoop:
             "model_provider": trusted_profile.provider if trusted_profile else "unavailable",
         }
         outbound_metadata["trace_summary"] = self._trace_summary(session.events[turn_event_start:])
+        if reuse_requested and isinstance(active_analysis_id, str):
+            evidence_refs = collect_evidence_refs(
+                turn_events, self.workspace, final_content, active_analysis_id
+            )
+        outbound_metadata["evidence_refs"] = evidence_refs
         if terminal_error_code:
             outbound_metadata["error_code"] = terminal_error_code
         if msg.channel == "telegram":
@@ -2647,7 +2694,15 @@ class AgentLoop:
             channel=origin_channel, chat_id=origin_chat_id, content=final_content
         )
 
-    async def _consolidate_memory(self, session, archive_all: bool = False) -> None:
+    async def _consolidate_memory(
+        self,
+        session,
+        archive_all: bool = False,
+        *,
+        model: str | None = None,
+        telemetry: RunModelTelemetry | None = None,
+        request_uuid: str | None = None,
+    ) -> None:
         """Consolidate old messages into MEMORY.md + HISTORY.md.
 
         Args:
@@ -2655,9 +2710,23 @@ class AgentLoop:
                        If False, only write to files without modifying session.
         """
         async with self._consolidation_lock:
-            await self._consolidate_memory_inner(session, archive_all)
+            await self._consolidate_memory_inner(
+                session,
+                archive_all,
+                model=model,
+                telemetry=telemetry,
+                request_uuid=request_uuid,
+            )
 
-    async def _consolidate_memory_inner(self, session, archive_all: bool = False) -> None:
+    async def _consolidate_memory_inner(
+        self,
+        session,
+        archive_all: bool = False,
+        *,
+        model: str | None = None,
+        telemetry: RunModelTelemetry | None = None,
+        request_uuid: str | None = None,
+    ) -> None:
         """Inner consolidation logic, must be called under _consolidation_lock."""
         memory = self.context.memory
         consolidation_events = session.get_consolidation_events()
@@ -2733,6 +2802,7 @@ class AgentLoop:
 Respond with ONLY valid JSON, no markdown fences."""
 
         try:
+            consolidation_model = self.consolidation_model or model or self.model
             response = await self.provider.chat(
                 messages=[
                     {
@@ -2741,8 +2811,22 @@ Respond with ONLY valid JSON, no markdown fences."""
                     },
                     {"role": "user", "content": prompt},
                 ],
-                model=self.consolidation_model or self.model,
+                model=consolidation_model,
             )
+            if telemetry is not None:
+                telemetry.record(response)
+            if request_uuid:
+                session.add_event(
+                    {
+                        "uuid": str(uuid.uuid4()),
+                        "parent_uuid": request_uuid,
+                        "type": "model_call",
+                        "model": consolidation_model,
+                        "maintenance": "memory_consolidation",
+                        "usage": response.usage,
+                        "provider_retry_count": response.retry_count,
+                    }
+                )
             text = (response.content or "").strip()
             if not text:
                 logger.warning("Memory consolidation: LLM returned empty response, skipping")

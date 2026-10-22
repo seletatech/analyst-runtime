@@ -234,6 +234,52 @@ def test_self_contained_confirmation_persists_user_supplied_semantics(tmp_path: 
     assert "- 时间范围：请确认" not in memory
 
 
+def test_natural_language_confirmation_persists_the_complete_card(tmp_path: Path) -> None:
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=_SequenceProvider([]),
+        workspace=tmp_path,
+        tool_profile="trusted-analysis",
+    )
+    question = "2026年一到六月份涂布总米数有多少？"
+    answer = (
+        "1.所有产品\n"
+        "2.2026年1月1号到6月30号，按涂布收卷/产出完成日期归属\n"
+        "3.逐条记录累加涂布产出米数，只计涂布工序产出"
+    )
+    assert agent._remember_confirmed_semantics(
+        answer,
+        [
+            {"role": "user", "content": question},
+            {
+                "role": "assistant",
+                "content": "## 待确认的定义与口径\n- 产品范围\n- 时间范围\n- 统计口径",
+            },
+        ],
+    ) == question
+    memory = (tmp_path / "memory" / "MEMORY.md").read_text(encoding="utf-8")
+    assert answer in memory
+
+
+def test_memory_hit_does_not_append_first_turn_clarification(tmp_path: Path) -> None:
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=_SequenceProvider([]),
+        workspace=tmp_path,
+        tool_profile="trusted-analysis",
+    )
+    question = "2026年一到六月份涂布总米数有多少？"
+    agent._remember_confirmed_semantics(
+        "确认并按上述口径分析",
+        [
+            {"role": "user", "content": question},
+            {"role": "assistant", "content": "待确认的定义与口径：所有产品；2026-01 至 2026-06"},
+        ],
+    )
+    assert agent._confirmed_semantics_reuse_instruction(question)
+    assert agent._semantic_clarification_instruction(question, []) is None
+
+
 def test_second_clarification_reply_forces_analysis_to_start(tmp_path: Path) -> None:
     agent = AgentLoop(
         bus=MessageBus(),
@@ -1938,6 +1984,46 @@ async def test_trusted_analysis_does_not_launch_unmetered_model_maintenance(
     assert response is not None
     assert len(provider.calls) == 1
     assert response.metadata["usage"]["model_call_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_trusted_analysis_consolidation_is_accounted_when_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANALYST_RUNTIME_ENABLE_MEMORY_CONSOLIDATION", "true")
+    provider = _SequenceProvider(
+        [
+            LLMResponse(content="finished", finish_reason="stop"),
+            LLMResponse(
+                content=json.dumps(
+                    {"history_entry": "[2026-09-19 00:00] remembered", "memory_update": ""}
+                ),
+                finish_reason="stop",
+                usage={"prompt_tokens": 3, "completion_tokens": 2},
+            ),
+        ]
+    )
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=provider,
+        workspace=tmp_path,
+        tool_profile="trusted-analysis",
+        memory_window=1,
+        consolidation_interval=0,
+    )
+    session = agent.sessions.get_or_create("web:metered-chat")
+    session.add_event({"content": "old question", "type": "user_input", "uuid": "old-user"})
+    session.add_event(
+        {"content": "old answer", "type": "final_response", "uuid": "old-answer"}
+    )
+
+    response = await agent._process_message(_message("metered-chat"))
+
+    assert response is not None
+    assert len(provider.calls) == 2
+    assert response.metadata["usage"]["model_call_count"] == 2
+    assert response.metadata["usage"]["prompt_tokens"] == 3
+    assert "memory_consolidation" in str(session.events)
 
 
 @pytest.mark.asyncio
