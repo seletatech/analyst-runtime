@@ -30,6 +30,8 @@ from analyst_runtime.agent.tool_profiles import register_workspace_analysis_tool
 from analyst_runtime.agent.tools.analyze_image_tool import AnalyzeImageTool
 from analyst_runtime.agent.tools.cron import CronTool
 from analyst_runtime.agent.tools.filesystem import ReadFileTool
+from analyst_runtime.agent.tools.pdf import PdfReadResult
+from analyst_runtime.providers.registry import model_supports_vision
 from analyst_runtime.agent.tools.message import MessageTool
 from analyst_runtime.agent.tools.registry import ToolRegistry, register_integration_tools
 from analyst_runtime.agent.tools.spawn import SpawnTool
@@ -1289,6 +1291,9 @@ class AgentLoop:
             Tuple of (final_content, list_of_tools_used).
         """
         active_model = model or self.model
+        read_tool = self.tools.get("read_file")
+        if isinstance(read_tool, ReadFileTool):
+            read_tool.set_vision_context(model_supports_vision(active_model))
         messages = initial_messages
         iteration = 0
         final_content = None
@@ -1447,6 +1452,7 @@ class AgentLoop:
                 # start in a confused state and immediately generate more malformed calls.
                 _persist_session = session and request_uuid and not _all_malformed
 
+                pdf_images: list[dict] = []
                 for tool_call in response.tool_calls:
                     sanitized_name = sanitize_tool_name(tool_call.name)
                     tools_used.append(sanitized_name)
@@ -1487,6 +1493,8 @@ class AgentLoop:
                     # Bound results on first insertion, not on every later call:
                     # this keeps the growing prompt prefix stable for provider caching.
                     # Full evidence remains available in the archive and to binding below.
+                    if isinstance(result, PdfReadResult):
+                        pdf_images.extend(result.image_blocks)
                     context_result = self._save_tool_result(
                         tool_call.id, sanitized_name, result
                     )
@@ -1535,6 +1543,11 @@ class AgentLoop:
                             parent_uuid=parent_uuid,
                         )
 
+                # Append images only after every tool response in the batch, preserving
+                # the provider tool-call protocol. Do not put image bytes in public trace
+                # or persistent session events; later turns can reread the audited PDF.
+                if pdf_images:
+                    messages.append({"role": "user", "content": pdf_images})
                 steered_messages = await self.steering.apply_pending(
                     execution_key,
                     messages,

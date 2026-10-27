@@ -36,6 +36,7 @@ def test_provider_catalog_drives_runtime_provider_capabilities() -> None:
         "zhipu",
     }
     assert {profile.id for profile in MODEL_PROFILES} == {
+        "deepseek-v4.1-flash-1017",
         "deepseek-v4-flash-0731",
         "glm-5.3-flash",
     }
@@ -66,7 +67,7 @@ def test_nebius_catalog_owns_model_environment_and_credential_metadata() -> None
     spec = find_by_name("nebius")
 
     assert spec is not None
-    assert spec.sandbox_default_model == "deepseek-ai/DeepSeek-V4-Flash-0731"
+    assert spec.sandbox_default_model == "deepseek-ai/DeepSeek-V4.1-Flash-1017"
     assert spec.api_base_env == ("NEBIUS_BASE_URL",)
     assert spec.accepts_request_credentials is True
     assert spec.resolve_model("deepseek-ai/DeepSeek-V4-Flash-0731") == (
@@ -204,7 +205,7 @@ def test_nebius_sandbox_uses_openai_compatible_model_id(monkeypatch) -> None:
     monkeypatch.delenv("AGENT_MODEL", raising=False)
     monkeypatch.delenv("LLM_MODEL_ID", raising=False)
 
-    assert _resolve_sandbox_model("nebius") == "deepseek-ai/DeepSeek-V4-Flash-0731"
+    assert _resolve_sandbox_model("nebius") == "deepseek-ai/DeepSeek-V4.1-Flash-1017"
 
 
 def test_sandbox_bootstrap_honors_explicit_nebius_provider() -> None:

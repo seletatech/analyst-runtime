@@ -106,6 +106,7 @@ class ModelProfileSpec:
     default_provider: str
     routes: tuple[tuple[str, str], ...]
     aliases: tuple[str, ...] = ()
+    vision: bool = False
 
     def resolve(self) -> ModelProfile:
         provider = os.environ.get(self.provider_env, self.default_provider).strip().lower()
@@ -117,6 +118,14 @@ class ModelProfileSpec:
 
 
 MODEL_PROFILES: tuple[ModelProfileSpec, ...] = (
+    ModelProfileSpec(
+        id="deepseek-v4.1-flash-1017",
+        label="DeepSeek V4.1 Flash 1017",
+        provider_env="DEEPSEEK_V41_FLASH_PROVIDER",
+        default_provider="nebius",
+        routes=(("nebius", "deepseek-ai/DeepSeek-V4.1-Flash-1017"),),
+        vision=True,
+    ),
     ModelProfileSpec(
         id="deepseek-v4-flash-0731",
         label="DeepSeek-V4-Flash",
@@ -131,6 +140,7 @@ MODEL_PROFILES: tuple[ModelProfileSpec, ...] = (
     ),
     ModelProfileSpec(
         id="glm-5.3-flash",
+        vision=True,
         label="GLM-5.3-Flash",
         provider_env="GLM_5_3_FLASH_PROVIDER",
         default_provider="nebius",
@@ -263,7 +273,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         detect_by_base_keyword="tokenfactory.nebius.com",
         default_api_base="https://api.tokenfactory.nebius.com/v1",
         api_base_env=("NEBIUS_BASE_URL",),
-        sandbox_default_model="deepseek-ai/DeepSeek-V4-Flash-0731",
+        sandbox_default_model="deepseek-ai/DeepSeek-V4.1-Flash-1017",
         accepts_request_credentials=True,
         strip_model_prefix=False,
         model_overrides=(),
@@ -660,3 +670,10 @@ def canonical_provider_name(name: str) -> str:
 def sandbox_provider_names() -> set[str]:
     """Return providers that can own the Runtime's root sandbox adapter."""
     return {spec.name for spec in PROVIDERS if spec.sandbox_default_model}
+
+
+def model_supports_vision(model: str) -> bool:
+    """Execution capability derived only from the catalog, including adapter prefixes."""
+    return any(spec.vision and (model == spec.id or any(
+        model == routed or model.endswith("/" + routed) for _, routed in spec.routes
+    )) for spec in MODEL_PROFILES)
