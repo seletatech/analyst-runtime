@@ -28,3 +28,10 @@ retry policy, session/workspace context, trace, and final message delivery.
   and `message`. It must not connect MCP or register Composio, external integrations,
   audio/vision, `spawn`, `cron`, or manufacturing-semantics tools. Semantics confirmation is a
   workspace prompt rule carried by ordinary conversation history, not a tool or handoff.
+
+## PDF page reading (2026-10-27)
+
+User-approved exception: trusted-analysis may use its existing read_file tool to read
+a PDF page's text and supply its rendered image to a vision-capable model in the same
+Runtime loop. This does not enable generic vision/audio tools or a second model loop.
+PDF sources and pages remain untrusted evidence, owner/conversation-scoped for uploads.

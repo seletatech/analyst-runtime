@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from analyst_runtime.agent.tools.base import Tool
+from analyst_runtime.agent.tools.pdf import read_pdf_page
 
 
 def _resolve_path(
@@ -55,6 +56,7 @@ class ReadFileTool(Tool):
         self._allowed_dir = allowed_dir
         self._allowed_dirs = allowed_dirs or []
         self._audit_results = audit_results
+        self._vision: ContextVar[bool] = ContextVar("read_file_vision", default=False)
         self._conversation_id: ContextVar[str | None] = ContextVar(
             "read_file_conversation_id",
             default=None,
@@ -65,23 +67,27 @@ class ReadFileTool(Tool):
         normalized = conversation_id.strip() if isinstance(conversation_id, str) else ""
         self._conversation_id.set(normalized or None)
 
+    def set_vision_context(self, enabled: bool) -> None:
+        self._vision.set(enabled)
+
     @property
     def name(self) -> str:
         return "read_file"
 
     @property
     def description(self) -> str:
-        return "Read the contents of a file at the given path."
+        return "Read text files or one PDF page (text and, for vision models, its image). PDF page defaults to 1; use page=N to read all required pages. PDFs are limited to 25 MB and 200 pages."
 
     @property
     def parameters(self) -> dict[str, Any]:
         return {
             "type": "object",
-            "properties": {"path": {"type": "string", "description": "The file path to read"}},
+            "properties": {"path": {"type": "string", "description": "The file path to read"},
+                           "page": {"type": "integer", "minimum": 1, "description": "PDF page number (one-based), default 1"}},
             "required": ["path"],
         }
 
-    async def execute(self, path: str, **kwargs: Any) -> str:
+    async def execute(self, path: str, page: int = 1, **kwargs: Any) -> str:
         read_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         try:
             if self._audit_results and self._has_symlink_component(Path(path).expanduser()):
@@ -101,7 +107,19 @@ class ReadFileTool(Tool):
                     else f"Error: Not a file: {path}"
                 )
 
+            is_pdf = file_path.suffix.lower() == ".pdf"
+            if is_pdf and file_path.stat().st_size > 25 * 1024 * 1024:
+                raise ValueError("PDF exceeds 25 MB")
             content_bytes = file_path.read_bytes()
+            if is_pdf:
+                source = {"schema_version": "analyst-read-result/v1", "status": "ok",
+                          "path": str(file_path), "read_at": read_at,
+                          "content_sha256": hashlib.sha256(content_bytes).hexdigest()}
+                if audit_upload:
+                    source = json.loads(self._audited_content(file_path, content_bytes, read_at, binary_pdf=True))
+                    if source.get("status") != "ok":
+                        return json.dumps(source)
+                return await read_pdf_page(content_bytes, page=page, vision=self._vision.get(), source=source)
             if audit_upload:
                 return self._audited_content(file_path, content_bytes, read_at)
             return content_bytes.decode("utf-8")
@@ -145,13 +163,13 @@ class ReadFileTool(Tool):
             ensure_ascii=False,
         )
 
-    def _audited_content(self, file_path: Path, content: bytes, read_at: str) -> str:
-        if len(content) > 1024 * 1024:
+    def _audited_content(self, file_path: Path, content: bytes, read_at: str, binary_pdf: bool = False) -> str:
+        if len(content) > (25 * 1024 * 1024 if binary_pdf else 1024 * 1024):
             return self._audit_error(
                 "limit_exceeded", str(file_path), read_at, "File exceeds the 1MB read limit"
             )
         try:
-            decoded = content.decode("utf-8")
+            decoded = "" if binary_pdf else content.decode("utf-8")
         except UnicodeDecodeError:
             return self._audit_error(
                 "unsupported", str(file_path), read_at, "File is not valid UTF-8 text"

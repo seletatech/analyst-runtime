@@ -2095,3 +2095,37 @@ async def test_short_but_oversized_exchange_is_fully_compacted(tmp_path: Path) -
     ]
     assert "summary of the large result" in str(compacted)
     assert "very large result" not in str(compacted)
+
+@pytest.mark.asyncio
+async def test_pdf_images_follow_complete_tool_batch_without_leaking_to_trace(tmp_path):
+    from analyst_runtime.agent.tools.pdf import PdfReadResult
+
+    class PdfTool(_StaticAnalysisExec):
+        @property
+        def name(self):
+            return "read_file"
+
+        async def execute(self, **kwargs):
+            return PdfReadResult('{"status":"ok","page":1}', [
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,TEST_PRIVATE_IMAGE"}}
+            ])
+
+    provider = _SequenceProvider([
+        LLMResponse(content=None, tool_calls=[
+            ToolCallRequest(id="pdf1", name="read_file", arguments={"command": "read"}),
+            ToolCallRequest(id="pdf2", name="read_file", arguments={"command": "read"}),
+        ]),
+        LLMResponse(content="分析已完成：The PDF page contains a table."),
+    ])
+    agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path)
+    agent.tools.register(PdfTool({}))
+    progress = []
+    async def on_progress(text, metadata):
+        progress.append(metadata)
+    await agent._run_agent_loop([{"role": "user", "content": "Read PDF"}], on_progress=on_progress,
+                                model="deepseek-ai/DeepSeek-V4.1-Flash-1017")
+    messages = provider.calls[-1]
+    roles = [m['role'] for m in messages]
+    assert roles[:5] == ['user', 'assistant', 'tool', 'tool', 'user']
+    assert len(messages[4]['content']) == 2
+    assert 'TEST_PRIVATE_IMAGE' not in json.dumps(progress)
