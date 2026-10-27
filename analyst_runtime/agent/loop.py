@@ -30,9 +30,8 @@ from analyst_runtime.agent.tool_profiles import register_workspace_analysis_tool
 from analyst_runtime.agent.tools.analyze_image_tool import AnalyzeImageTool
 from analyst_runtime.agent.tools.cron import CronTool
 from analyst_runtime.agent.tools.filesystem import ReadFileTool
-from analyst_runtime.agent.tools.pdf import PdfReadResult
-from analyst_runtime.providers.registry import model_supports_vision
 from analyst_runtime.agent.tools.message import MessageTool
+from analyst_runtime.agent.tools.pdf import PdfReadResult
 from analyst_runtime.agent.tools.registry import ToolRegistry, register_integration_tools
 from analyst_runtime.agent.tools.spawn import SpawnTool
 from analyst_runtime.agent.tools.transcription_tool import TranscribeAudioTool
@@ -42,6 +41,7 @@ from analyst_runtime.bus.queue import MessageBus
 from analyst_runtime.config.schema import ExecToolConfig
 from analyst_runtime.cron.service import CronService
 from analyst_runtime.providers.base import LLMProvider
+from analyst_runtime.providers.registry import model_supports_vision
 from analyst_runtime.session.manager import HISTORY_SUMMARY_TYPE, Session, SessionManager
 from analyst_runtime.utils.tool_calls import sanitize_tool_name
 from analyst_runtime.workspace import WorkspaceConfiguration
