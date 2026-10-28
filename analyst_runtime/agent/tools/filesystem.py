@@ -189,7 +189,9 @@ class ReadFileTool(Tool):
         """Per-run evidence, never accepted from model-authored files or exec stdout."""
         text = json.dumps(messages, ensure_ascii=False)
         paths = re.findall(
-            r'(/[^\s"<>]*?/uploads/[^"\n；）<>]*?\.(?:xlsx|xlsm|xls|ods))', text, re.I
+            r'(/[^\s"<>]*?/uploads/[^"\n；）<>]*?\.(?:xlsx|xlsm|xlsb|xltx|xltm|xlt|xls|ods))(?=[\s"；）<>]|$)',
+            text,
+            re.I,
         )
         self._spreadsheet_state.set(
             {"required": set(paths), "reports": {}, "hashes": {}, "artifacts": {}, "attempts": 0}
@@ -227,6 +229,17 @@ class ReadFileTool(Tool):
     def spreadsheet_blocked_report(self):
         state = self._spreadsheet_state.get() or {}
         names = "、".join(Path(p).name for p in sorted(state.get("required", [])))
+        unsupported = [
+            Path(p).name
+            for p in state.get("required", [])
+            if Path(p).suffix.lower() not in {".xlsx", ".xlsm", ".xls", ".ods"}
+        ]
+        if unsupported:
+            return (
+                "本次 Excel 统计尚未完成核对："
+                + "、".join(unsupported)
+                + " 的格式暂不支持完整逐行统计。请另存为 XLSX 后上传；这些文件尚未纳入合计，不能据此给出总体结果。"
+            )
         return f"本次 Excel 统计尚未完成核对，不能交付可靠的合计或良率。涉及文件：{names}。请确认表头、数量单位、每行粒度和统计范围；无法解释的行必须列为待核，不能按零值或正常记录处理。"
 
     def spreadsheet_artifacts(self):

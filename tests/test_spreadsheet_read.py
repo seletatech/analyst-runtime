@@ -201,3 +201,14 @@ async def test_legacy_spreadsheet_native_conversion_retains_original_identity(tm
     assert result["input_sha256"] != ""
     assert result["content_sha256"] == hashlib.sha256(data).hexdigest()
     assert "6397" in json.dumps(result)
+
+
+def test_unsupported_excel_extension_is_not_misread_as_xls(tmp_path):
+    from analyst_runtime.agent.tools.filesystem import ReadFileTool
+
+    tool = ReadFileTool(allowed_dir=tmp_path)
+    file = tmp_path / "uploads/user/conversation/version/new.xlsb"
+    tool.begin_spreadsheet_turn([{"role": "user", "content": str(file)}])
+    assert tool._spreadsheet_state.get()["required"] == {str(file)}
+    assert tool.spreadsheet_delivery()[1]
+    assert "另存为 XLSX" in tool.spreadsheet_blocked_report()
