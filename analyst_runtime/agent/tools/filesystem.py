@@ -1,9 +1,9 @@
 """File system tools: read, write, edit, append, and patch."""
 
+import asyncio
 import hashlib
 import json
 import os
-import asyncio
 import re
 import shutil
 import tempfile
@@ -14,8 +14,13 @@ from typing import Any
 
 from analyst_runtime.agent.tools.account_access import account_workspace
 from analyst_runtime.agent.tools.base import Tool
-from analyst_runtime.agent.tools.documents import DOCUMENT_SUFFIXES, archive_entries, read_document, read_text
 from analyst_runtime.agent.tools.document_isolation import isolate_office
+from analyst_runtime.agent.tools.documents import (
+    DOCUMENT_SUFFIXES,
+    archive_entries,
+    read_document,
+    read_text,
+)
 
 
 async def _read_excel_cells(content: bytes, sheet: str | None, cells: str | None, source: dict) -> str:

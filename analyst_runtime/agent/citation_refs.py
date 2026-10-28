@@ -7,6 +7,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any
+
 from analyst_runtime.agent.tools.account_access import account_workspace
 
 CITATION_TOKEN = re.compile(r"\[\[cite:([a-f0-9]{24})\]\]")

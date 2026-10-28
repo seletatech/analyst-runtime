@@ -19,8 +19,8 @@ from analyst_runtime.agent.analysis_context import (
     AnalysisArtifactError,
     AnalysisArtifactStore,
 )
-from analyst_runtime.agent.context import ContextBuilder
 from analyst_runtime.agent.citation_refs import annotate_history, citation_from_read, cited_refs
+from analyst_runtime.agent.context import ContextBuilder
 from analyst_runtime.agent.evidence_refs import collect_evidence_refs
 from analyst_runtime.agent.memory import ProtectedMemorySection
 from analyst_runtime.agent.routing import RoutingError, RuntimeRequestRouter
