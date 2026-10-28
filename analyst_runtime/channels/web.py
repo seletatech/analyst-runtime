@@ -144,7 +144,7 @@ class WebChannel(BaseChannel):
             raise RuntimeError("ANALYST-RUNTIME-DELIVERY-001: Web channel is not configured")
 
         run_id = msg.run_id or msg.chat_id.removeprefix("chat-")
-        attachments = await self._upload_attachments(msg.media or [], run_id=run_id)
+        attachments = await self._upload_attachments(msg.media or [], run_id=run_id, user_id=msg.metadata.get("_authenticated_user_id"))
         payload = make_message(
             msg_type=MSG_TYPE_AGENT_RESPONSE,
             content=msg.content,
@@ -178,7 +178,7 @@ class WebChannel(BaseChannel):
             raise
 
     async def _upload_attachments(
-        self, media_paths: list[str], *, run_id: str
+        self, media_paths: list[str], *, run_id: str, user_id: str | None = None
     ) -> list[dict[str, Any]]:
         uploaded: list[dict[str, Any]] = []
         if not media_paths:
@@ -187,7 +187,10 @@ class WebChannel(BaseChannel):
         async with httpx.AsyncClient(trust_env=False) as client:
             for raw_path in media_paths:
                 workspace = Path(os.environ.get("WORKSPACE_PATH", "/workspace")).resolve()
-                path = Path(raw_path).expanduser()
+                from analyst_runtime.agent.tools.account_access import AccountWorkspace
+                if os.environ.get("ANALYST_RUNTIME_REQUIRE_ACCOUNT_SCOPE", "").lower() == "true" and not user_id:
+                    raise PermissionError("Attachment account identity is required")
+                path = AccountWorkspace(workspace, user_id).resolve(raw_path) if user_id else Path(raw_path).expanduser()
                 if not path.is_absolute():
                     path = workspace / path
                 path = path.resolve()
@@ -198,9 +201,14 @@ class WebChannel(BaseChannel):
                 if not path.is_file():
                     raise FileNotFoundError(f"Attachment does not exist: {path.name}")
                 media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+                if user_id:
+                    with AccountWorkspace(workspace, user_id).open(path, "rb") as source:
+                        content = source.read()
+                else:
+                    content = path.read_bytes()
                 response = await client.post(
                     url,
-                    content=path.read_bytes(),
+                    content=content,
                     headers={
                         "Authorization": f"Bearer {self._gateway_token}",
                         "Content-Type": media_type,

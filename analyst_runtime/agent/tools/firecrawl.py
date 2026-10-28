@@ -13,9 +13,11 @@ from typing import Any
 
 import httpx
 
+from analyst_runtime.agent.tools.account_access import account_workspace
 from analyst_runtime.agent.tools.base import Tool
 from analyst_runtime.agent.tools.gateway_auth import gateway_client
-from analyst_runtime.utils.helpers import ensure_dir, safe_filename
+from analyst_runtime.utils.helpers import ensure_dir as _ensure_dir
+from analyst_runtime.utils.helpers import safe_filename
 
 DEFAULT_SEARCH_LIMIT = 5
 DEFAULT_BROWSER_STEPS = 12
@@ -23,8 +25,30 @@ DEFAULT_BROWSER_FAILURES = 3
 DEFAULT_BROWSER_TIMEOUT_MS = 90_000
 
 
+def ensure_dir(path: Path) -> Path:
+    scope = account_workspace()
+    return scope.mkdir(path) if scope is not None else _ensure_dir(path)
+
+
+def _write_text(path: Path, text: str) -> None:
+    if (scope := account_workspace()) is not None:
+        with scope.open(path, "w") as output:
+            output.write(text)
+    else:
+        path.write_text(text, encoding="utf-8")
+
+
+def _write_screenshot(path: Path, content: bytes) -> None:
+    if (scope := account_workspace()) is not None:
+        with scope.open(path, "wb") as output:
+            output.write(content)
+    else:
+        path.write_bytes(content)
+
+
 def _workspace_path() -> Path:
-    return Path(os.environ.get("WORKSPACE_PATH", "/workspace")).expanduser().resolve()
+    scope = account_workspace()
+    return scope.private if scope is not None else Path(os.environ.get("WORKSPACE_PATH", "/workspace")).expanduser().resolve()
 
 
 def _relative_to_workspace(path: Path) -> str:
@@ -40,8 +64,8 @@ def _artifact_root(task_id: str) -> Path:
 
 
 def _json_write(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    ensure_dir(path.parent)
+    _write_text(path, json.dumps(payload, indent=2, ensure_ascii=False))
 
 
 def _gateway_ready() -> bool:
@@ -81,6 +105,8 @@ async def _firecrawl_gateway_request(
 
 
 def _resolve_workspace_file(path_str: str) -> Path:
+    if (scope := account_workspace()) is not None:
+        return scope.resolve(path_str)
     workspace = _workspace_path()
     candidate = Path(path_str)
     if not candidate.is_absolute():
@@ -105,7 +131,11 @@ def _load_cookie_profile(
     if not source.exists():
         raise FileNotFoundError(f"Cookie file not found: {source}")
 
-    raw = json.loads(source.read_text(encoding="utf-8"))
+    if (scope := account_workspace()) is not None:
+        with scope.open(source, "r") as stream:
+            raw = json.load(stream)
+    else:
+        raw = json.loads(source.read_text(encoding="utf-8"))
     cookies = raw.get("cookies") if isinstance(raw, dict) else raw
     if not isinstance(cookies, list):
         raise ValueError("Cookie file must contain a JSON array or an object with a 'cookies' array")
@@ -841,8 +871,8 @@ class FirecrawlBrowserTool(Tool):
             stderr_text = executed.get("stderr") if isinstance(executed.get("stderr"), str) else ""
             stdout_path = artifact_dir / "stdout.log"
             stderr_path = artifact_dir / "stderr.log"
-            stdout_path.write_text(stdout_text, encoding="utf-8")
-            stderr_path.write_text(stderr_text, encoding="utf-8")
+            _write_text(stdout_path, stdout_text)
+            _write_text(stderr_path, stderr_text)
 
             execute_error = _browser_execute_error(executed)
             result = _parse_browser_result(executed)
@@ -864,7 +894,7 @@ class FirecrawlBrowserTool(Tool):
                 data = screenshot.get("data")
                 if isinstance(data, str) and data:
                     screenshot_path = screenshots_dir / "final.png"
-                    screenshot_path.write_bytes(base64.b64decode(data))
+                    (_write_screenshot(screenshot_path, base64.b64decode(data)))
                     screenshot_refs.append({"field": "final", "path": _relative_to_workspace(screenshot_path)})
                     evidence_refs.append(_relative_to_workspace(screenshot_path))
 

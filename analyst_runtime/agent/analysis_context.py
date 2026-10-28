@@ -9,6 +9,8 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
+from analyst_runtime.agent.tools.account_access import account_workspace
+
 ANALYSIS_ID = re.compile(r"^(?P<kind>[a-z][a-z0-9-]*):(?P<digest>[0-9a-f]{64})$")
 
 
@@ -20,7 +22,12 @@ class AnalysisArtifactStore:
     """Resolve compact analysis context from an opaque analysis identity."""
 
     def __init__(self, workspace: Path) -> None:
-        self.root = workspace / "artifacts" / "analyses"
+        self.workspace = workspace
+
+    @property
+    def root(self) -> Path:
+        scope = account_workspace()
+        return (scope.private if scope is not None else self.workspace) / "artifacts" / "analyses"
 
     def load(self, analysis_id: str) -> dict[str, Any]:
         match = ANALYSIS_ID.fullmatch(analysis_id)
@@ -28,7 +35,11 @@ class AnalysisArtifactStore:
             raise AnalysisArtifactError("invalid analysis identity")
         path = self.root / match.group("kind") / f"{match.group('digest')}.json"
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            if (scope := account_workspace()) is not None:
+                with scope.open(path, "r") as source:
+                    payload = json.load(source)
+            else:
+                payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
             raise AnalysisArtifactError("analysis artifact is unavailable") from error
         if not isinstance(payload, dict):
@@ -110,8 +121,12 @@ class AnalysisArtifactStore:
         analysis_id = f"chat-answer:{digest}"
         payload["analysis_id"] = analysis_id
         path = self.root / "chat-answer" / f"{digest}.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        if (scope := account_workspace()) is not None:
+            with scope.open(path, "w") as output:
+                json.dump(payload, output, ensure_ascii=False)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         return analysis_id
 
     def matches_completed_answer(

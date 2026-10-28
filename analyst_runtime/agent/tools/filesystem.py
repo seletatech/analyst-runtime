@@ -8,8 +8,33 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from analyst_runtime.agent.tools.account_access import account_workspace
 from analyst_runtime.agent.tools.base import Tool
 from analyst_runtime.agent.tools.documents import DOCUMENT_SUFFIXES, read_document, read_text
+
+
+def _read_bytes(path: Path) -> bytes:
+    if (scope := account_workspace()) is not None:
+        with scope.open(path, "rb") as source:
+            return source.read()
+    return path.read_bytes()
+
+
+def _read_text(path: Path) -> str:
+    if (scope := account_workspace()) is not None:
+        with scope.open(path, "r") as source:
+            return source.read()
+    return path.read_text(encoding="utf-8")
+
+
+def _write_text(path: Path, content: str, mode: str = "w") -> None:
+    if (scope := account_workspace()) is not None:
+        with scope.open(path, mode) as output:
+            output.write(content)
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open(mode, encoding="utf-8") as output:
+            output.write(content)
 
 
 def _resolve_path(
@@ -18,7 +43,8 @@ def _resolve_path(
     allowed_dirs: list[Path] | None = None,
 ) -> Path:
     """Resolve path and optionally enforce directory restriction."""
-    candidate = Path(path).expanduser()
+    scope = account_workspace()
+    candidate = scope.resolve(path) if scope is not None else Path(path).expanduser()
     if not candidate.is_absolute() and allowed_dir is not None:
         candidate = allowed_dir / candidate
     resolved = candidate.resolve()
@@ -35,7 +61,8 @@ def _resolve_path(
 
 def _resolve_writable_path(path: str, allowed_dir: Path | None = None) -> Path:
     """Resolve a generic write target without exposing managed project memory."""
-    resolved = _resolve_path(path, allowed_dir)
+    scope = account_workspace()
+    resolved = scope.resolve(path, write=True) if scope is not None else _resolve_path(path, allowed_dir)
     is_memory_file = (
         resolved.name.casefold() == "memory.md" and resolved.parent.name.casefold() == "memory"
     )
@@ -102,6 +129,8 @@ class ReadFileTool(Tool):
     ) -> str:
         read_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         try:
+            if (scope := account_workspace()) is not None:
+                path = str(scope.resolve(path))
             if self._audit_results and self._has_symlink_component(Path(path).expanduser()):
                 return self._audit_error("denied", path, read_at, "Symbolic links are not allowed")
             file_path = _resolve_path(path, self._allowed_dir, self._allowed_dirs)
@@ -122,7 +151,7 @@ class ReadFileTool(Tool):
             is_document = file_path.suffix.lower() in DOCUMENT_SUFFIXES | {".pdf"}
             if is_document and file_path.stat().st_size > 100 * 1024 * 1024:
                 raise ValueError("Document exceeds 100 MB")
-            content_bytes = file_path.read_bytes()
+            content_bytes = _read_bytes(file_path)
             if is_document:
                 source = {
                     "schema_version": "analyst-read-result/v1",
@@ -217,13 +246,18 @@ class ReadFileTool(Tool):
                 "denied", str(file_path), read_at, "File has no approved upload manifest"
             )
         try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest = json.loads(_read_text(manifest_path))
         except (OSError, ValueError):
             return self._audit_error(
                 "integrity_error", str(file_path), read_at, "Upload manifest is invalid"
             )
         digest = hashlib.sha256(content).hexdigest()
         conversation_id = self._conversation_id.get()
+        scope = account_workspace()
+        if scope is not None:
+            if manifest.get("user_id") != scope.user_id:
+                return self._audit_error("denied", str(file_path), read_at, "File belongs to another account")
+            conversation_id = manifest.get("conversation_id")
         if not conversation_id or manifest.get("conversation_id") != conversation_id:
             return self._audit_error(
                 "denied",
@@ -257,7 +291,7 @@ class ReadFileTool(Tool):
                 "content_sha256": digest,
                 "conversation_id": conversation_id,
                 "version": manifest.get("version"),
-                "uploaded_at": manifest.get("created_at"),
+                "uploaded_at": (manifest.get("source") or {}).get("received_at") if isinstance(manifest.get("source"), dict) and (manifest.get("source") or {}).get("received_at") else manifest.get("created_at"),
                 "read_at": read_at,
                 "content": decoded,
             },
@@ -296,8 +330,7 @@ class WriteFileTool(Tool):
     async def execute(self, path: str, content: str, **kwargs: Any) -> str:
         try:
             file_path = _resolve_writable_path(path, self._allowed_dir)
-            file_path.parent.mkdir(parents=True, exist_ok=True)
-            file_path.write_text(content, encoding="utf-8")
+            _write_text(file_path, content)
             return f"Successfully wrote {len(content)} bytes to {path}"
         except PermissionError as e:
             return f"Error: {e}"
@@ -336,9 +369,7 @@ class AppendFileTool(Tool):
     async def execute(self, path: str, content: str, **kwargs: Any) -> str:
         try:
             file_path = _resolve_writable_path(path, self._allowed_dir)
-            file_path.parent.mkdir(parents=True, exist_ok=True)
-            with file_path.open("a", encoding="utf-8") as f:
-                f.write(content)
+            _write_text(file_path, content, "a")
             return f"Successfully appended {len(content)} bytes to {path}"
         except PermissionError as e:
             return f"Error: {e}"
@@ -396,7 +427,7 @@ class PatchFileTool(Tool):
             if not file_path.is_file():
                 return f"Error: Not a file: {path}"
 
-            content = file_path.read_text(encoding="utf-8")
+            content = _read_text(file_path)
             for patch in patches:
                 old_text = patch["old_text"]
                 new_text = patch["new_text"]
@@ -411,7 +442,7 @@ class PatchFileTool(Tool):
                     )
                 content = content.replace(old_text, new_text, 1)
 
-            file_path.write_text(content, encoding="utf-8")
+            _write_text(file_path, content)
             return f"Successfully patched {len(patches)} section(s) in {path}"
         except PermissionError as e:
             return f"Error: {e}"
@@ -451,7 +482,7 @@ class EditFileTool(Tool):
             if not file_path.exists():
                 return f"Error: File not found: {path}"
 
-            content = file_path.read_text(encoding="utf-8")
+            content = _read_text(file_path)
 
             if old_text not in content:
                 return "Error: old_text not found in file. Make sure it matches exactly."
@@ -462,7 +493,7 @@ class EditFileTool(Tool):
                 return f"Warning: old_text appears {count} times. Please provide more context to make it unique."
 
             new_content = content.replace(old_text, new_text, 1)
-            file_path.write_text(new_content, encoding="utf-8")
+            _write_text(file_path, new_content)
 
             return f"Successfully edited {path}"
         except PermissionError as e:
@@ -488,18 +519,23 @@ class ListDirTool(Tool):
 
     @property
     def description(self) -> str:
-        return "List the contents of a directory."
+        return "List directory contents. For authenticated accounts, uploads lists all historical uploaded files; use offset to continue past 100 files."
 
     @property
     def parameters(self) -> dict[str, Any]:
         return {
             "type": "object",
-            "properties": {"path": {"type": "string", "description": "The directory path to list"}},
+            "properties": {"path": {"type": "string", "description": "The directory path to list"}, "offset": {"type": "integer", "minimum": 0, "description": "Upload catalog pagination offset"}},
             "required": ["path"],
         }
 
-    async def execute(self, path: str, **kwargs: Any) -> str:
+    async def execute(self, path: str, offset: int = 0, **kwargs: Any) -> str:
         try:
+            scope = account_workspace()
+            if scope is not None and scope.resolve(path) == scope.uploads:
+                return scope.catalog(offset)
+            if scope is not None:
+                return scope.listing(path)
             dir_path = _resolve_path(path, self._allowed_dir, self._allowed_dirs)
             if not dir_path.exists():
                 return f"Error: Directory not found: {path}"

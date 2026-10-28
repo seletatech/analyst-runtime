@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from analyst_runtime.agent.tools.account_access import account_workspace
 from analyst_runtime.agent.tools.base import Tool
 
 # Secret env vars whose *values* are scrubbed from all tool output.
@@ -127,7 +128,16 @@ class ExecTool(Tool):
         }
 
     async def execute(self, command: str, working_dir: str | None = None, **kwargs: Any) -> str:
-        cwd = working_dir or self.working_dir or os.getcwd()
+        scope = account_workspace()
+        if scope is not None:
+            if sys.platform != "linux":
+                return "Error: Account-isolated exec requires Linux Landlock; command was not executed"
+            try:
+                cwd = str(scope.resolve(working_dir)) if working_dir else str(scope.private)
+            except PermissionError as error:
+                return f"Error: {error}"
+        else:
+            cwd = working_dir or self.working_dir or os.getcwd()
         guard_error = self._guard_command(command, cwd)
         if guard_error:
             return guard_error
@@ -146,7 +156,12 @@ class ExecTool(Tool):
                 **process_group_options,
             }
             sandbox_profile = self._macos_memory_sandbox_profile(cwd)
-            if sandbox_profile is not None:
+            if scope is not None:
+                process = await asyncio.create_subprocess_exec(
+                    sys.executable, "-I", str(Path(__file__).with_name("account_exec.py")),
+                    str(scope.workspace), scope.user_id, command, **process_options,
+                )
+            elif sandbox_profile is not None:
                 process = await asyncio.create_subprocess_exec(
                     "/usr/bin/sandbox-exec",
                     "-p",
@@ -237,7 +252,8 @@ class ExecTool(Tool):
         env = {key: value for key in _EXEC_ENV_ALLOWLIST if (value := os.environ.get(key))}
         env.setdefault("PATH", os.defpath)
 
-        workspace = Path(self.working_dir or cwd).resolve()
+        scope = account_workspace()
+        workspace = scope.private if scope is not None else Path(self.working_dir or cwd).resolve()
         temp_dir = workspace / "tmp_analysis"
         env["HOME"] = str(workspace)
         env["TMPDIR"] = str(temp_dir if temp_dir.is_dir() else workspace)

@@ -669,8 +669,11 @@ class AgentLoop:
         inbound_turn_id: str | None = None,
         analysis_conversation_id: str | None = None,
         run_id: str | None = None,
+        account_user_id: str | None = None,
     ) -> None:
         """Update context for all tools that need routing info."""
+        from analyst_runtime.agent.tools.account_access import bind_account_workspace
+        bind_account_workspace(self.workspace, account_user_id)
         if message_tool := self.tools.get("message"):
             if isinstance(message_tool, MessageTool):
                 message_tool.set_context(channel, chat_id)
@@ -1146,13 +1149,20 @@ class AgentLoop:
             return result  # short result: inline, no file needed
 
         # Long result: archive full content and return truncated preview
-        tool_results_dir = self.workspace / "sessions" / "tool-results"
-        tool_results_dir.mkdir(parents=True, exist_ok=True)
+        from analyst_runtime.agent.tools.account_access import account_workspace
+        scope = account_workspace()
+        tool_results_dir = (scope.private if scope else self.workspace) / "sessions" / "tool-results"
+        if scope is None:
+            tool_results_dir.mkdir(parents=True, exist_ok=True)
         # Sanitize tool_call_id to prevent path traversal — keep only safe chars
         safe_id = "".join(c for c in tool_call_id if c.isalnum() or c in "-_")
         filename = f"{safe_id}.txt"
         try:
-            (tool_results_dir / filename).write_text(result, encoding="utf-8")
+            if scope is not None:
+                with scope.open(tool_results_dir / filename, "w") as output:
+                    output.write(result)
+            else:
+                (tool_results_dir / filename).write_text(result, encoding="utf-8")
             return (
                 f"{result[: self._INLINE_RESULT_CHARS]}\n"
                 f"[...{len(result):,} chars total — full result at "
@@ -2103,11 +2113,29 @@ class AgentLoop:
         if msg.channel == "system":
             return await self._process_system_message(msg)
 
+        account_user_id = msg.metadata.get("_authenticated_user_id") if self.request_router.is_trusted_gateway(msg) else None
+        if self.tool_profile == "trusted-analysis" and os.environ.get("ANALYST_RUNTIME_REQUIRE_ACCOUNT_SCOPE", "").lower() == "true" and not account_user_id:
+            from analyst_runtime.agent.tools.account_access import bind_account_workspace
+            bind_account_workspace(self.workspace, None)
+            return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, run_id=msg.run_id,
+                content="无法验证账号文件权限，请重新登录后重试。", metadata={"error_code": "ANALYST-RUNTIME-ACCOUNT-001"})
+        from analyst_runtime.agent.tools.account_access import bind_account_workspace
+        bind_account_workspace(self.workspace, account_user_id)
+
         preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
         logger.info(f"Processing message from {msg.channel}:{msg.sender_id}: {preview}")
 
         key = session_key or msg.session_key
         session = self.sessions.get_or_create(key)
+        if account_user_id:
+            previous_owner = session.metadata.get("authenticated_account_id")
+            if previous_owner and previous_owner != account_user_id:
+                from analyst_runtime.agent.tools.account_access import bind_account_workspace
+                bind_account_workspace(self.workspace, None)
+                return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, run_id=msg.run_id,
+                    content="无法访问其他账号的会话。", metadata={"error_code": "ANALYST-RUNTIME-ACCOUNT-001"})
+            session.metadata["authenticated_account_id"] = account_user_id
+
         if self.tool_profile != "full":
             self._clear_composio_api_key_pending(session)
         elif (
@@ -2268,6 +2296,7 @@ class AgentLoop:
             inbound_turn_id=request_uuid,
             analysis_conversation_id=msg.conversation_id,
             run_id=msg.run_id,
+            account_user_id=account_user_id,
         )
 
         # Capture history BEFORE emitting the current user_input event.
