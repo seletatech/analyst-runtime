@@ -44,7 +44,7 @@ async def test_excel_output_is_bounded_during_read(tmp_path, monkeypatch):
     with zipfile.ZipFile(workbook, 'w') as archive:
         archive.writestr('xl/workbook.xml', 'fixture')
     binary = tmp_path / 'excel-mcp'
-    binary.write_text('#!/bin/sh\nhead -c 100001 /dev/zero\n')
+    binary.write_text('#!/bin/sh\ni=0; while [ $i -lt 501 ]; do printf "%0200d" 0; i=$((i+1)); done\n')
     binary.chmod(0o755)
     monkeypatch.setenv('PATH', f'{tmp_path}:/usr/bin:/bin')
     with pytest.raises(ValueError, match='exceeds the read limit'):
