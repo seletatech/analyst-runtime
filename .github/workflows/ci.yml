@@ -9,15 +9,24 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.12"]
+        include:
+          - python-version: "3.11"
+            image: ghcr.io/astral-sh/uv:python3.11-alpine@sha256:58f67f392d490af90763f17b57a31245e3f26fb12ac9b6322c7af20507f15336
+          - python-version: "3.12"
+            image: ghcr.io/astral-sh/uv:python3.12-alpine@sha256:2501529eb49d9f3ad85ed6ea53fb775f84034587f2ea807dd42b01413a383c1e
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          python-version: ${{ matrix.python-version }}
-          enable-cache: true
-      - run: uv sync --frozen --extra dev
-      - run: uv run ruff check .
-      - run: sudo apt-get update -qq && sudo apt-get install -y poppler-utils libreoffice fonts-dejavu-core fonts-noto-cjk
-      - run: uv run pytest -q -m "not e2e"
-      - run: uv build
+      # Exercise native parsers and Landlock in the same libc environment as the product image.
+      - name: Locked full suite and package build (Alpine)
+        env:
+          TEST_IMAGE: ${{ matrix.image }}
+        run: |
+          docker run --rm -v "$PWD:/source:ro" "$TEST_IMAGE" sh -ec '
+            apk add --no-cache poppler-utils libreoffice font-dejavu font-noto-cjk git
+            cp -a /source /tmp/runtime
+            cd /tmp/runtime
+            uv sync --frozen --extra dev
+            uv run ruff check .
+            uv run pytest -q -m "not e2e"
+            uv build
+          '
