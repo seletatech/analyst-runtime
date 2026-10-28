@@ -153,9 +153,7 @@ async def test_tool_progress_omits_empty_reason_marker(tmp_path: Path) -> None:
         if text:
             progress.append(text)
 
-    await agent._run_agent_loop(
-        [{"role": "user", "content": "inspect"}], on_progress=capture
-    )
+    await agent._run_agent_loop([{"role": "user", "content": "inspect"}], on_progress=capture)
 
     assert progress == []
 
@@ -177,9 +175,7 @@ def test_explicit_confirmation_persists_the_latest_semantic_card(tmp_path: Path)
         tool_profile="trusted-analysis",
     )
     proposal = (
-        "## 待确认的定义与口径\n\n"
-        "- 查询对象：批次 251103L1003A-1\n"
-        "- 时间范围：完整生命周期\n"
+        "## 待确认的定义与口径\n\n- 查询对象：批次 251103L1003A-1\n- 时间范围：完整生命周期\n"
     )
 
     agent._remember_confirmed_semantics(
@@ -198,9 +194,7 @@ def test_explicit_confirmation_persists_the_latest_semantic_card(tmp_path: Path)
     assert "批次 251103L1003A-1" in memory
     assert "适用问题" in memory
     assert proposal in agent.context.build_system_prompt()
-    assert agent._confirmed_semantics_reuse_instruction(
-        "请查询批次 251103L1003A-1 的完整生产档案"
-    )
+    assert agent._confirmed_semantics_reuse_instruction("请查询批次 251103L1003A-1 的完整生产档案")
     assert not agent._confirmed_semantics_reuse_instruction("查询另一个批次")
 
 
@@ -247,16 +241,19 @@ def test_natural_language_confirmation_persists_the_complete_card(tmp_path: Path
         "2.2026年1月1号到6月30号，按涂布收卷/产出完成日期归属\n"
         "3.逐条记录累加涂布产出米数，只计涂布工序产出"
     )
-    assert agent._remember_confirmed_semantics(
-        answer,
-        [
-            {"role": "user", "content": question},
-            {
-                "role": "assistant",
-                "content": "## 待确认的定义与口径\n- 产品范围\n- 时间范围\n- 统计口径",
-            },
-        ],
-    ) == question
+    assert (
+        agent._remember_confirmed_semantics(
+            answer,
+            [
+                {"role": "user", "content": question},
+                {
+                    "role": "assistant",
+                    "content": "## 待确认的定义与口径\n- 产品范围\n- 时间范围\n- 统计口径",
+                },
+            ],
+        )
+        == question
+    )
     memory = (tmp_path / "memory" / "MEMORY.md").read_text(encoding="utf-8")
     assert answer in memory
 
@@ -1456,8 +1453,7 @@ async def test_provider_billing_failure_returns_native_support_error_code(
         [
             LLMResponse(
                 content=(
-                    "Error calling LLM: litellm.RateLimitError: "
-                    "余额不足或无可用资源包,请充值。"
+                    "Error calling LLM: litellm.RateLimitError: 余额不足或无可用资源包,请充值。"
                 ),
                 finish_reason="error",
                 error_code="ANALYST-RUNTIME-BILLING-001",
@@ -1470,8 +1466,7 @@ async def test_provider_billing_failure_returns_native_support_error_code(
 
     assert response is not None
     assert response.content == (
-        "分析未完成。Error Code: ANALYST-RUNTIME-BILLING-001。"
-        "请将此错误码提供给技术支持。"
+        "分析未完成。Error Code: ANALYST-RUNTIME-BILLING-001。请将此错误码提供给技术支持。"
     )
     assert response.metadata["error_code"] == "ANALYST-RUNTIME-BILLING-001"
 
@@ -1799,13 +1794,17 @@ async def test_litellm_classifies_zai_insufficient_balance_as_billing_error(
     assert attempts == 1
     assert response.finish_reason == "error"
     assert response.error_code == "ANALYST-RUNTIME-BILLING-001"
-    assert LiteLLMProvider._provider_error_code(
-        "The free trial quota for the service has been exhausted and "
-        "postpaid billing is not enabled."
-    ) == "ANALYST-RUNTIME-BILLING-001"
-    assert LiteLLMProvider._provider_error_code(
-        "Key limit exceeded (total limit)."
-    ) == "ANALYST-RUNTIME-BILLING-001"
+    assert (
+        LiteLLMProvider._provider_error_code(
+            "The free trial quota for the service has been exhausted and "
+            "postpaid billing is not enabled."
+        )
+        == "ANALYST-RUNTIME-BILLING-001"
+    )
+    assert (
+        LiteLLMProvider._provider_error_code("Key limit exceeded (total limit).")
+        == "ANALYST-RUNTIME-BILLING-001"
+    )
 
 
 @pytest.mark.asyncio
@@ -2013,9 +2012,7 @@ async def test_trusted_analysis_consolidation_is_accounted_when_enabled(
     )
     session = agent.sessions.get_or_create("web:metered-chat")
     session.add_event({"content": "old question", "type": "user_input", "uuid": "old-user"})
-    session.add_event(
-        {"content": "old answer", "type": "final_response", "uuid": "old-answer"}
-    )
+    session.add_event({"content": "old answer", "type": "final_response", "uuid": "old-answer"})
 
     response = await agent._process_message(_message("metered-chat"))
 
@@ -2096,6 +2093,7 @@ async def test_short_but_oversized_exchange_is_fully_compacted(tmp_path: Path) -
     assert "summary of the large result" in str(compacted)
     assert "very large result" not in str(compacted)
 
+
 @pytest.mark.asyncio
 async def test_pdf_images_follow_complete_tool_batch_without_leaking_to_trace(tmp_path):
     from analyst_runtime.agent.tools.pdf import PdfReadResult
@@ -2106,26 +2104,125 @@ async def test_pdf_images_follow_complete_tool_batch_without_leaking_to_trace(tm
             return "read_file"
 
         async def execute(self, **kwargs):
-            return PdfReadResult('{"status":"ok","page":1}', [
-                {"type": "image_url", "image_url": {"url": "data:image/png;base64,TEST_PRIVATE_IMAGE"}}
-            ])
+            return PdfReadResult(
+                '{"status":"ok","page":1}',
+                [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,TEST_PRIVATE_IMAGE"},
+                    }
+                ],
+            )
 
-    provider = _SequenceProvider([
-        LLMResponse(content=None, tool_calls=[
-            ToolCallRequest(id="pdf1", name="read_file", arguments={"command": "read"}),
-            ToolCallRequest(id="pdf2", name="read_file", arguments={"command": "read"}),
-        ]),
-        LLMResponse(content="分析已完成：The PDF page contains a table."),
-    ])
+    provider = _SequenceProvider(
+        [
+            LLMResponse(
+                content=None,
+                tool_calls=[
+                    ToolCallRequest(id="pdf1", name="read_file", arguments={"command": "read"}),
+                    ToolCallRequest(id="pdf2", name="read_file", arguments={"command": "read"}),
+                ],
+            ),
+            LLMResponse(content="分析已完成：The PDF page contains a table."),
+        ]
+    )
     agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path)
     agent.tools.register(PdfTool({}))
     progress = []
+
     async def on_progress(text, metadata):
         progress.append(metadata)
-    await agent._run_agent_loop([{"role": "user", "content": "Read PDF"}], on_progress=on_progress,
-                                model="deepseek-ai/DeepSeek-V4.1-Flash-1017")
+
+    await agent._run_agent_loop(
+        [{"role": "user", "content": "Read PDF"}],
+        on_progress=on_progress,
+        model="deepseek-ai/DeepSeek-V4.1-Flash-1017",
+    )
     messages = provider.calls[-1]
-    roles = [m['role'] for m in messages]
-    assert roles[:5] == ['user', 'assistant', 'tool', 'tool', 'user']
-    assert len(messages[4]['content']) == 2
-    assert 'TEST_PRIVATE_IMAGE' not in json.dumps(progress)
+    roles = [m["role"] for m in messages]
+    assert roles[:5] == ["user", "assistant", "tool", "tool", "user"]
+    assert len(messages[4]["content"]) == 2
+    assert "TEST_PRIVATE_IMAGE" not in json.dumps(progress)
+
+
+@pytest.mark.asyncio
+async def test_spreadsheet_final_cannot_bypass_accounting_with_prose(tmp_path):
+    provider = _SequenceProvider([LLMResponse(content="全部合计 999，无遗漏。") for _ in range(3)])
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=provider,
+        workspace=tmp_path,
+        max_iterations=5,
+        tool_profile="trusted-analysis",
+    )
+    result = await agent._run_agent_loop(
+        [{"role": "user", "content": f"统计 {tmp_path}/uploads/user/conversation/version/new.xlsx"}]
+    )
+    text, _ = result
+    assert "999" not in text
+    assert "尚未完成核对" in text
+    assert len(provider.calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_spreadsheet_verified_numbers_replace_fabricated_final(tmp_path):
+    from test_spreadsheet_read import book, plan
+
+    file = tmp_path / "uploads/user/conversation/version/new.xlsx"
+    file.parent.mkdir(parents=True)
+    file.write_bytes(book())
+    (file.parent / ".manifest.json").write_text(
+        json.dumps(
+            dict(
+                schema_version="analyst-runtime-workspace-upload/v1",
+                user_id="user",
+                conversation_id="conversation",
+                version="version",
+                workspace_path=str(file),
+                content_sha256=hashlib.sha256(book()).hexdigest(),
+            )
+        )
+    )
+    provider = _SequenceProvider(
+        [
+            LLMResponse(
+                content="总计 999",
+                tool_calls=[
+                    ToolCallRequest(id="inventory", name="read_file", arguments={"path": str(file)})
+                ],
+            ),
+            LLMResponse(
+                content=None,
+                tool_calls=[
+                    ToolCallRequest(
+                        id="calculate",
+                        name="read_file",
+                        arguments={"path": str(file), "spreadsheet_plan": plan()},
+                    )
+                ],
+            ),
+            LLMResponse(content="总计 999，全部记录正常，无遗漏。"),
+        ]
+    )
+    agent = AgentLoop(
+        bus=MessageBus(),
+        provider=provider,
+        workspace=tmp_path,
+        max_iterations=5,
+        tool_profile="trusted-analysis",
+    )
+    agent.tools.get("read_file").set_conversation_context("conversation")
+    progress = []
+
+    async def capture(text, tool=None):
+        if text:
+            progress.append(text)
+
+    result = await agent._run_agent_loop(
+        [{"role": "user", "content": f"统计 {file}"}], on_progress=capture
+    )
+    text, _ = result
+    assert "总计 999" not in text and "全部记录正常" not in text
+    assert all("总计 999" not in p for p in progress)
+    assert "可计算 2 行" in text and "待核 2 行" in text and "C4" in text
+    assert len(agent.tools.get("read_file").spreadsheet_artifacts()) == 2

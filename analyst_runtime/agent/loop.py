@@ -1294,6 +1294,7 @@ class AgentLoop:
         read_tool = self.tools.get("read_file")
         if isinstance(read_tool, ReadFileTool):
             read_tool.set_vision_context(model_supports_vision(active_model))
+            read_tool.begin_spreadsheet_turn(initial_messages)
         messages = initial_messages
         iteration = 0
         final_content = None
@@ -1384,6 +1385,8 @@ class AgentLoop:
                     # reasoning_content.
                     clean = self._strip_think(response.content)
                     if clean:
+                        if isinstance(read_tool, ReadFileTool) and read_tool._spreadsheet_state.get() and read_tool._spreadsheet_state.get()["required"]:
+                            clean = "正在核对上传表格的统计口径与逐行去向。"
                         await on_progress(clean, None)
 
                 tool_call_dicts = [
@@ -1473,7 +1476,10 @@ class AgentLoop:
                     elif pre_result := pre_results.get(tool_call.id):
                         result = pre_result  # auth_required or skipped — do not execute
                     else:
-                        result = await self.tools.execute(sanitized_name, tool_call.arguments)
+                        if sanitized_name == "message" and isinstance(read_tool, ReadFileTool) and read_tool._spreadsheet_state.get() and read_tool._spreadsheet_state.get()["required"]:
+                            result = "Spreadsheet reports must be delivered through the verified final response; message delivery is blocked for this turn."
+                        else:
+                            result = await self.tools.execute(sanitized_name, tool_call.arguments)
                         if guarded_signature and self._guarded_tool_call_succeeded(result):
                             _completed_guarded_tool_calls[guarded_signature] = result
                     logger.debug(
@@ -1670,6 +1676,22 @@ class AgentLoop:
                     record_retry("output_length")
             else:
                 final_content = self._strip_think(response.content)
+                if isinstance(read_tool, ReadFileTool):
+                    verified_report, spreadsheet_hint = read_tool.spreadsheet_delivery()
+                    if spreadsheet_hint:
+                        state = read_tool._spreadsheet_state.get()
+                        if state["attempts"] <= 2 and iteration < self.max_iterations:
+                            messages = self.context.add_assistant_message(messages, final_content or "", None, reasoning_content=response.reasoning_content)
+                            messages.append({"role":"user", "content":spreadsheet_hint})
+                            final_content = None
+                            record_retry("spreadsheet_accounting_required")
+                            continue
+                        terminal_error_code = "ANALYST-RUNTIME-SPREADSHEET-001"
+                        final_content = read_tool.spreadsheet_blocked_report()
+                    elif verified_report:
+                        # Numerical delivery is rendered from in-memory verified results,
+                        # never from arbitrary model prose or model-authored certificates.
+                        final_content = verified_report
 
                 # Some models (e.g. Kimi k2.5) finish a turn with only <think> tokens
                 # and no visible text after completing tool calls.  Rather than falling
@@ -2601,6 +2623,7 @@ class AgentLoop:
             content=final_content,
             run_id=msg.run_id,
             conversation_id=msg.conversation_id,
+            media=(self.tools.get("read_file").spreadsheet_artifacts() if isinstance(self.tools.get("read_file"), ReadFileTool) and not terminal_error_code else []),
             metadata=outbound_metadata,
         )
 
