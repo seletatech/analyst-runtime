@@ -65,7 +65,9 @@ def archive_entries(content: bytes):
     return archive, entries
 
 
-async def office_pdf(content: bytes, suffix: str) -> bytes:
+async def office_pdf(content: bytes, suffix: str, target_format: str = "pdf") -> bytes:
+    if target_format not in {"pdf", "xlsx"}:
+        raise ValueError("Unsupported conversion target")
     from analyst_runtime.agent.tools.document_isolation import isolate_office
 
     # A private profile disables macros and external document updates; no credentials inherited.
@@ -116,7 +118,7 @@ async def office_pdf(content: bytes, suffix: str) -> bytes:
             "--nodefault",
             "--norestore",
             "--convert-to",
-            "pdf",
+            target_format,
             "--outdir",
             str(root),
             str(source),
@@ -148,7 +150,7 @@ async def office_pdf(content: bytes, suffix: str) -> bytes:
                     pipe.unlink()
             except FileNotFoundError:
                 pass
-        pdf = root / "source.pdf"
+        pdf = root / ("source." + target_format)
         if process.returncode or not pdf.is_file() or pdf.stat().st_size > MAX_BYTES:
             raise ValueError(
                 "Document cannot be converted; it may be encrypted, damaged or too large"

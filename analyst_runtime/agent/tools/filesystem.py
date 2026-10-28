@@ -1,8 +1,10 @@
 """File system tools: read, write, edit, append, and patch."""
 
+import csv
 import hashlib
 import json
 import os
+import re
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from pathlib import Path
@@ -56,6 +58,7 @@ class ReadFileTool(Tool):
         self._allowed_dir = allowed_dir
         self._allowed_dirs = allowed_dirs or []
         self._audit_results = audit_results
+        self._spreadsheet_state = ContextVar("spreadsheet_turn", default=None)
         self._vision: ContextVar[bool] = ContextVar("read_file_vision", default=False)
         self._conversation_id: ContextVar[str | None] = ContextVar(
             "read_file_conversation_id",
@@ -76,13 +79,17 @@ class ReadFileTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Read text files or one PDF page (text and, for vision models, its image). ZIP: omit member to list entries, then pass member=exact_name. Office/HTML/PDF page defaults to 1; use page=N to read all required pages. PDFs are limited to 100 MB and 200 pages."
+        return "Excel: full sheet/row inventory by default, spreadsheet_plan for row-accounted statistics; page=N reads 100 source rows per sheet. Read text files or one PDF page (text and, for vision models, its image). ZIP: omit member to list entries, then pass member=exact_name. Office/HTML/PDF page defaults to 1; use page=N to read all required pages. PDFs are limited to 100 MB and 200 pages."
 
     @property
     def parameters(self) -> dict[str, Any]:
         return {
             "type": "object",
             "properties": {
+                "spreadsheet_plan": {
+                    "type": "object",
+                    "description": 'For complete statistics: {"sheets":{"Sheet1":{"headers":[1],"exclude":[{"row":9,"reason":"subtotal"}],"group_by":["A"],"metrics":[{"name":"yield","operation":"ratio","numerator":"C","denominator":"B","unit":"fraction"}]}}}. Operations: sum/count/ratio/average/min/max. Use column for non-ratio numeric metrics. Omitted sheets and invalid cells remain pending. Optional filters: [{"column":"D","operation":"date_range","start":"2026-01-01","end_exclusive":"2026-02-01"}] or eq/ne/lt/lte/gt/gte with value. Missing filter values remain pending. Confirm units/grain first; never guess.',
+                },
                 "member": {
                     "type": "string",
                     "description": "Exact ZIP entry name; omit to list entries",
@@ -98,9 +105,16 @@ class ReadFileTool(Tool):
         }
 
     async def execute(
-        self, path: str, page: int = 1, member: str | None = None, **kwargs: Any
+        self,
+        path: str,
+        page: int = 1,
+        member: str | None = None,
+        spreadsheet_plan: dict | None = None,
+        **kwargs: Any,
     ) -> str:
         read_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        if spreadsheet_plan is not None and (state := self._spreadsheet_state.get()):
+            state["reports"].pop(str(Path(path).expanduser().resolve()), None)
         try:
             if self._audit_results and self._has_symlink_component(Path(path).expanduser()):
                 return self._audit_error("denied", path, read_at, "Symbolic links are not allowed")
@@ -119,7 +133,7 @@ class ReadFileTool(Tool):
                     else f"Error: Not a file: {path}"
                 )
 
-            is_document = file_path.suffix.lower() in DOCUMENT_SUFFIXES | {".pdf"}
+            is_document = file_path.suffix.lower() in DOCUMENT_SUFFIXES | {".pdf", ".xlsm"}
             if is_document and file_path.stat().st_size > 100 * 1024 * 1024:
                 raise ValueError("Document exceeds 100 MB")
             content_bytes = file_path.read_bytes()
@@ -137,6 +151,10 @@ class ReadFileTool(Tool):
                     )
                     if source.get("status") != "ok":
                         return json.dumps(source)
+                if file_path.suffix.lower() in {".xlsx", ".xlsm", ".xls", ".ods"}:
+                    return await self._read_spreadsheet(
+                        file_path, content_bytes, source, page, spreadsheet_plan
+                    )
                 return await read_document(
                     content_bytes,
                     suffix=file_path.suffix.lower(),
@@ -166,6 +184,147 @@ class ReadFileTool(Tool):
                 if self._audit_results
                 else f"Error reading file: {str(e)}"
             )
+
+    def begin_spreadsheet_turn(self, messages):
+        """Per-run evidence, never accepted from model-authored files or exec stdout."""
+        text = json.dumps(messages, ensure_ascii=False)
+        paths = re.findall(
+            r'(/[^\s"<>]*?/uploads/[^"\n；）<>]*?\.(?:xlsx|xlsm|xls|ods))', text, re.I
+        )
+        self._spreadsheet_state.set(
+            {"required": set(paths), "reports": {}, "hashes": {}, "artifacts": {}, "attempts": 0}
+        )
+
+    def spreadsheet_delivery(self):
+        state = self._spreadsheet_state.get()
+        if not state or not state["required"]:
+            return None, None
+        missing = state["required"] - state["reports"].keys()
+        for path, expected in state["hashes"].items():
+            file = Path(path)
+            if (
+                self._has_symlink_component(file)
+                or not file.is_file()
+                or hashlib.sha256(file.read_bytes()).hexdigest() != expected
+            ):
+                missing.add(path)
+        for path, expected in state["artifacts"].items():
+            file = Path(path)
+            if (
+                self._has_symlink_component(file)
+                or not file.is_file()
+                or hashlib.sha256(file.read_bytes()).hexdigest() != expected
+            ):
+                missing.update(state["required"])
+        if missing:
+            state["attempts"] += 1
+            files = "、".join(Path(p).name for p in sorted(missing))
+            return None, (
+                f"Excel statistical delivery is not verified for: {files}. Call read_file for workbook inventory, then pass spreadsheet_plan with explicit headers, units, grouping and metrics. Never omit hidden/missing rows. If interpretation is unclear, ask a specific question and explain affected locations; do not invent a statistical result."
+            )
+        return "\n\n".join(state["reports"][p] for p in sorted(state["required"])), None
+
+    def spreadsheet_blocked_report(self):
+        state = self._spreadsheet_state.get() or {}
+        names = "、".join(Path(p).name for p in sorted(state.get("required", [])))
+        return f"本次 Excel 统计尚未完成核对，不能交付可靠的合计或良率。涉及文件：{names}。请确认表头、数量单位、每行粒度和统计范围；无法解释的行必须列为待核，不能按零值或正常记录处理。"
+
+    def spreadsheet_artifacts(self):
+        state = self._spreadsheet_state.get()
+        return (
+            list(state["artifacts"])
+            if state and state["reports"] and not (state["required"] - state["reports"].keys())
+            else []
+        )
+
+    async def _read_spreadsheet(self, path, content, source, page, plan):
+        from analyst_runtime.agent.tools.documents import office_pdf
+        from analyst_runtime.agent.tools.spreadsheets import (
+            analyze_workbook,
+            digest,
+            inspect_workbook,
+            render_report,
+        )
+
+        state = self._spreadsheet_state.get()
+        if state is not None:
+            state["required"].add(str(path))
+        original_hash = source["content_sha256"]
+        if path.suffix.lower() in {".xls", ".ods"}:
+            # Isolated conversion never replaces original source identity/cached evidence.
+            content = await office_pdf(content, path.suffix.lower(), target_format="xlsx")
+        if plan is None:
+            result = inspect_workbook(content, page)
+            result.update(source)
+            result.pop("content", None)
+            return json.dumps(result, ensure_ascii=False)
+        result = analyze_workbook(content, plan)
+        result.update(
+            converted_input_sha256=result["input_sha256"],
+            input_sha256=original_hash,
+            original_input_sha256=original_hash,
+            conversation_id=source.get("conversation_id"),
+            path=str(path),
+        )
+        root = self._allowed_dir or path.parent
+        folder = (
+            root
+            / "artifacts"
+            / "spreadsheet"
+            / digest([source.get("conversation_id"), str(path), original_hash, plan])
+        )
+        if self._has_symlink_component(folder) or not folder.resolve().is_relative_to(
+            root.resolve()
+        ):
+            raise PermissionError("Spreadsheet artifact path is outside its workspace")
+        folder.mkdir(parents=True, exist_ok=True)
+        artifact = folder / (path.stem + "-" + original_hash[:8] + "-核对明细.json")
+        if artifact.is_symlink() or artifact.with_suffix(".csv").is_symlink():
+            raise PermissionError("Spreadsheet artifact symbolic links are forbidden")
+        artifact.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        csv_path = artifact.with_suffix(".csv")
+        with csv_path.open("w", encoding="utf-8-sig", newline="") as stream:
+            writer = csv.DictWriter(
+                stream,
+                fieldnames=["sheet", "row", "source_id", "status", "reason", "values"],
+                extrasaction="ignore",
+            )
+            writer.writeheader()
+            for row in result["ledger"]:
+                safe = {
+                    k: json.dumps(v, ensure_ascii=False) if isinstance(v, dict) else v
+                    for k, v in row.items()
+                }
+                writer.writerow(
+                    {
+                        k: "'" + v
+                        if isinstance(v, str) and v.lstrip().startswith(("=", "+", "-", "@"))
+                        else v
+                        for k, v in safe.items()
+                    }
+                )
+        if max(artifact.stat().st_size, csv_path.stat().st_size) > 25 * 1024 * 1024:
+            raise ValueError(
+                "Spreadsheet evidence exceeds the 25 MB delivery limit; split the analysis scope"
+            )
+        report = render_report(result, path.name, artifact.name)
+        if state is not None:
+            state["reports"][str(path)] = report
+            state["hashes"][str(path)] = original_hash
+            for file in [artifact, csv_path]:
+                state["artifacts"][str(file)] = hashlib.sha256(file.read_bytes()).hexdigest()
+        return json.dumps(
+            {
+                **source,
+                "schema": "spreadsheet-analysis/v1",
+                "counts": result["counts"],
+                "groups": result["groups"][:100],
+                "artifact": str(artifact),
+                "plan_sha256": result["plan_sha256"],
+                "report": report,
+            },
+            ensure_ascii=False,
+        )
 
     def _is_workspace_upload(self, candidate: Path) -> bool:
         if self._allowed_dir is None:
