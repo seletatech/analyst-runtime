@@ -52,18 +52,28 @@ async def _read_excel_cells(content: bytes, sheet: str | None, cells: str | None
         process = await asyncio.create_subprocess_exec(
             executable, "cli", "filter_rows", "--input", "-",
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
             env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": directory},
             preexec_fn=(lambda: isolate_office(directory, readonly_paths=(executable,), local_sockets=False)) if os.sys.platform == "linux" else None,
         )
         try:
-            stdout, _ = await asyncio.wait_for(process.communicate(json.dumps(payload).encode()), 30)
+            assert process.stdin is not None and process.stdout is not None
+            process.stdin.write(json.dumps(payload).encode())
+            await process.stdin.drain()
+            process.stdin.close()
+            try:
+                stdout = await asyncio.wait_for(process.stdout.readexactly(100_001), 30)
+            except asyncio.IncompleteReadError as error:
+                stdout = error.partial
+            if len(stdout) > 100_000:
+                raise ValueError("Excel range output exceeds the read limit")
+            await asyncio.wait_for(process.wait(), 30)
         except BaseException:
             if process.returncode is None:
                 process.kill()
             await process.wait()
             raise
-        if process.returncode or len(stdout) > 100_000:
+        if process.returncode:
             raise ValueError("Excel range could not be read or is too large")
         value = json.loads(stdout)
         if not isinstance(value, dict) or value.get("sheet_name") != sheet or value.get("range") != normalized or not isinstance(value.get("rows"), list) or len(value["rows"]) > 1:

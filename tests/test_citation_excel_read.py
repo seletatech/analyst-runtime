@@ -34,3 +34,18 @@ async def test_excel_read_requires_audited_upload_and_bounded_range(tmp_path, mo
     assert json.loads(await tool.execute(str(file), sheet='Sales', cells='A1:Z100'))['status'] == 'error'
     tool.set_conversation_context('another-chat')
     assert json.loads(await tool.execute(str(file), sheet='Sales', cells='B2:C2'))['status'] == 'denied'
+
+
+@pytest.mark.asyncio
+async def test_excel_output_is_bounded_during_read(tmp_path, monkeypatch):
+    from analyst_runtime.agent.tools.filesystem import _read_excel_cells
+
+    workbook = tmp_path / 'input.xlsx'
+    with zipfile.ZipFile(workbook, 'w') as archive:
+        archive.writestr('xl/workbook.xml', 'fixture')
+    binary = tmp_path / 'excel-mcp'
+    binary.write_text('#!/bin/sh\nhead -c 100001 /dev/zero\n')
+    binary.chmod(0o755)
+    monkeypatch.setenv('PATH', f'{tmp_path}:/usr/bin:/bin')
+    with pytest.raises(ValueError, match='exceeds the read limit'):
+        await _read_excel_cells(workbook.read_bytes(), 'Sales', 'A1:A1', {})
