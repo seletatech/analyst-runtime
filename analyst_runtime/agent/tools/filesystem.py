@@ -291,7 +291,7 @@ class ReadFileTool(Tool):
                 "content_sha256": digest,
                 "conversation_id": conversation_id,
                 "version": manifest.get("version"),
-                "uploaded_at": manifest.get("created_at"),
+                "uploaded_at": (manifest.get("source") or {}).get("received_at") if isinstance(manifest.get("source"), dict) and (manifest.get("source") or {}).get("received_at") else manifest.get("created_at"),
                 "read_at": read_at,
                 "content": decoded,
             },
