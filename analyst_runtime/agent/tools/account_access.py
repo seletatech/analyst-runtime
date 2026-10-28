@@ -49,6 +49,20 @@ class AccountWorkspace:
     def uploads(self) -> Path:
         return self.workspace / "uploads" / self.user_id
 
+    def library_entry(self, path: Path) -> dict | None:
+        """Resolve an original only through the hash-sealed manifest of this run."""
+        if not self.snapshot_run_id or not path.is_relative_to(self.data):
+            return None
+        content = (self.data / "manifest.json").read_bytes()
+        if hashlib.sha256(content).hexdigest() != self.snapshot_sha256:
+            raise PermissionError("Library manifest changed")
+        entries = [entry for entry in json.loads(content).get("files", []) if entry.get("path") == str(path.relative_to(self.data))]
+        if len(entries) != 1:
+            return None
+        entry = entries[0]
+        str(UUID(entry["file_id"])); str(UUID(entry["version_id"]))
+        return entry
+
     @property
     def private(self) -> Path:
         root = self.workspace / "tmp_analysis" / "accounts" / self.user_id

@@ -207,7 +207,7 @@ class ReadFileTool(Tool):
             if self._audit_results and self._has_symlink_component(Path(path).expanduser()):
                 return self._audit_error("denied", path, read_at, "Symbolic links are not allowed")
             file_path = _resolve_path(path, self._allowed_dir, self._allowed_dirs)
-            audit_upload = self._audit_results and self._is_workspace_upload(file_path)
+            audit_upload = self._audit_results and (self._is_workspace_upload(file_path) or (scope is not None and scope.library_entry(file_path) is not None))
             if not file_path.exists():
                 return (
                     self._audit_error("not_found", path, read_at, "File not found")
@@ -227,7 +227,7 @@ class ReadFileTool(Tool):
             content_bytes = _read_bytes(file_path)
             if sheet is not None or cells is not None:
                 if not audit_upload or file_path.suffix.lower() not in {".xlsx", ".xlsm"} or member is not None:
-                    raise ValueError("Cell reads require a conversation-scoped Excel upload")
+                    raise ValueError("Cell reads require an authorized Excel original")
                 source = json.loads(self._audited_content(file_path, content_bytes, read_at, binary_pdf=True))
                 if source.get("status") != "ok":
                     return json.dumps(source)
@@ -310,6 +310,15 @@ class ReadFileTool(Tool):
             return self._audit_error(
                 "limit_exceeded", str(file_path), read_at, "File exceeds the read size limit"
             )
+        scope = account_workspace()
+        entry = scope.library_entry(file_path) if scope is not None else None
+        if entry is not None:
+            digest = hashlib.sha256(content).hexdigest()
+            if digest != entry.get("sha256"):
+                return self._audit_error("integrity_error", str(file_path), read_at, "Library original changed")
+            return json.dumps({"schema_version": "analyst-read-result/v1", "status": "ok", "path": str(file_path),
+                               "content_sha256": digest, "library_file_id": entry["file_id"], "library_version_id": entry["version_id"],
+                               "snapshot_run_id": scope.snapshot_run_id, "read_at": read_at, "content": "" if binary_pdf else content.decode("utf-8")}, ensure_ascii=False)
         try:
             decoded = "" if binary_pdf else content.decode("utf-8")
         except UnicodeDecodeError:

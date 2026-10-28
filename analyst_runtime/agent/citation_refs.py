@@ -63,16 +63,22 @@ def citation_from_read(
         page = 1 if payload.get("format") == "excel" else payload.get("page")
         if type(page) is not int or page < 1:
             return None
-        root = (workspace / "uploads").resolve()
         path = Path(payload["path"]).resolve(strict=True)
-        parts = path.relative_to(root).parts
         scope = account_workspace()
-        if len(parts) < 4 or parts[1] != payload.get("conversation_id") or parts[2] != payload.get("version"):
-            return None
-        if scope is None and parts[1] != conversation_id:
-            return None
-        if scope is not None and (scope.workspace != workspace.resolve() or parts[0] != scope.user_id):
-            return None
+        library = scope.library_entry(path) if scope is not None else None
+        if library is not None:
+            if payload.get("library_file_id") != library["file_id"] or payload.get("library_version_id") != library["version_id"] or payload.get("snapshot_run_id") != scope.snapshot_run_id:
+                return None
+            if payload.get("content_sha256") != library.get("sha256"):
+                return None
+        else:
+            parts = path.relative_to((workspace / "uploads").resolve()).parts
+            if len(parts) < 4 or parts[1] != payload.get("conversation_id") or parts[2] != payload.get("version"):
+                return None
+            if scope is None and parts[1] != conversation_id:
+                return None
+            if scope is not None and (scope.workspace != workspace.resolve() or parts[0] != scope.user_id):
+                return None
         expected_hash = payload.get("content_sha256")
         if not isinstance(expected_hash, str) or not re.fullmatch(r"[a-f0-9]{64}", expected_hash):
             return None
@@ -83,18 +89,20 @@ def citation_from_read(
         identity = hashlib.sha256(f"{tool_call_id}\0{digest}\0{page}\0{payload.get('archive_member', '')}\0{payload.get('sheet', '')}\0{payload.get('cells', '')}".encode()).hexdigest()[:24]
         ref: dict[str, Any] = {
             "id": identity,
-            "kind": "upload",
-            "path": str(path.relative_to(workspace.resolve())),
+            "kind": "library" if library is not None else "upload",
+            "path": "data/" + library["path"] if library is not None else str(path.relative_to(workspace.resolve())),
             "sha256": digest,
             "page": page,
             "format": payload["format"],
         }
+        if library is not None:
+            ref.update(file_id=library["file_id"], version_id=library["version_id"])
         if isinstance(payload.get("archive_member"), str):
             ref["member"] = payload["archive_member"]
         if payload.get("pagination") == "converted_document_pages":
             ref["converted"] = True
         pathname = payload.get("source_pathname")
-        if isinstance(pathname, str) and pathname.startswith(parts[0] + "--") and "/" not in pathname and "\\" not in pathname:
+        if library is None and isinstance(pathname, str) and pathname.startswith(parts[0] + "--") and "/" not in pathname and "\\" not in pathname:
             ref["source_pathname"] = pathname
         if payload.get("format") == "excel":
             if not isinstance(payload.get("sheet"), str) or not bounded_excel_range(str(payload.get("cells", ""))):

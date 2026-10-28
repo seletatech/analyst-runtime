@@ -94,3 +94,30 @@ print('SNAPSHOT_BOUNDARY_PASSED')
         assert (account_workspace().private / "answer.txt").read_text() == "private result"
     finally:
         bind_account_workspace(tmp_path, None)
+
+
+@pytest.mark.asyncio
+async def test_citation_is_bound_to_library_version_and_actual_original_hash(tmp_path):
+    from analyst_runtime.agent.citation_refs import citation_from_read
+    user, run, file_id, version = [str(uuid4()) for _ in range(4)]
+    identity = snapshot(tmp_path, user, run, "production count 17")
+    root = tmp_path / "library-snapshots" / user / run
+    manifest = json.loads((root / "manifest.json").read_text())
+    digest = hashlib.sha256((root / "original.txt").read_bytes()).hexdigest()
+    manifest["files"] = [{"file_id": file_id, "version_id": version, "path": "original.txt", "sha256": digest}]
+    content = json.dumps(manifest).encode()
+    (root / "manifest.json").write_bytes(content)
+    identity["manifest_sha256"] = hashlib.sha256(content).hexdigest()
+    bind_account_workspace(tmp_path, user, identity, run)
+    try:
+        tool = ReadFileTool(allowed_dir=tmp_path, audit_results=True)
+        result = await tool.execute("data/original.txt")
+        ref = citation_from_read(result, tmp_path, "chat", "call")
+        assert ref and (ref["kind"], ref["file_id"], ref["version_id"], ref["sha256"]) == ("library", file_id, version, digest)
+        forged = json.loads(result); forged["library_version_id"] = str(uuid4())
+        assert citation_from_read(json.dumps(forged), tmp_path, "chat", "call") is None
+        (root / "original.txt").write_text("changed original")
+        assert json.loads(await tool.execute("data/original.txt"))["status"] == "integrity_error"
+        assert citation_from_read(result, tmp_path, "chat", "call") is None
+    finally:
+        bind_account_workspace(tmp_path, None)
