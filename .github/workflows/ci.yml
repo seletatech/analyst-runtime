@@ -23,5 +23,5 @@ jobs:
           docker run --rm -v "$PWD:/source:ro" \
             -e PYTHON_TEST_VERSION=${{ matrix.python-version }} \
             ghcr.io/astral-sh/uv:python3.12-alpine@sha256:2501529eb49d9f3ad85ed6ea53fb775f84034587f2ea807dd42b01413a383c1e \
-            sh -ec 'apk add --no-cache bash git curl nodejs npm poppler-utils libreoffice font-dejavu font-noto-cjk; mkdir /tmp/runtime; tar -C /source --exclude=.git --exclude=.venv --exclude=.ruff_cache --exclude=.pytest_cache -cf - . | tar -C /tmp/runtime -xf -; cd /tmp/runtime; uv run --locked --python "$PYTHON_TEST_VERSION" --extra dev python -m pytest -q -m "not e2e"' 
+            sh -ec 'apk add --no-cache bash git curl nodejs npm poppler-utils libreoffice font-dejavu font-noto-cjk; mkdir /tmp/runtime; tar -C /source --exclude=.git --exclude=.venv --exclude=.ruff_cache --exclude=.pytest_cache -cf - . | tar -C /tmp/runtime -xf -; cd /tmp/runtime; uv run --locked --python "$PYTHON_TEST_VERSION" --extra dev python -m pytest -q -m "not e2e"'
       - run: uv build
