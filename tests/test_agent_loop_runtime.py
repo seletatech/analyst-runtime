@@ -2134,6 +2134,7 @@ async def test_pdf_images_follow_complete_tool_batch_without_leaking_to_trace(tm
 @pytest.mark.asyncio
 async def test_citation_token_is_issued_by_read_and_bound_to_tool_event(tmp_path: Path) -> None:
     import re
+
     from analyst_runtime.agent.citation_refs import cited_refs
 
     upload = tmp_path / 'uploads' / 'user' / 'conversation' / 'version'
