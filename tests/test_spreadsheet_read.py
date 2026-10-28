@@ -178,3 +178,25 @@ def test_formula_cache_never_replaces_unsupported_zero_or_cross_row_formula():
         number(cells, "D2")
     with pytest.raises(ValueError):
         number(cells, "E2")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("suffix", ["xls", "ods"])
+async def test_legacy_spreadsheet_native_conversion_retains_original_identity(tmp_path, suffix):
+    import hashlib
+    import shutil
+    from pathlib import Path
+
+    from analyst_runtime.agent.tools.filesystem import ReadFileTool
+
+    if not shutil.which("soffice"):
+        pytest.skip("Native Office converter is exercised in mandatory Linux CI")
+    data = (Path(__file__).parent / "fixtures/documents" / ("sample." + suffix)).read_bytes()
+    file = tmp_path / ("new." + suffix)
+    file.write_bytes(data)
+    tool = ReadFileTool(allowed_dir=tmp_path)
+    result = json.loads(await tool.execute(str(file)))
+    assert result["status"] == "ok"
+    assert result["input_sha256"] != ""
+    assert result["content_sha256"] == hashlib.sha256(data).hexdigest()
+    assert "6397" in json.dumps(result)
