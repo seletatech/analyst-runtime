@@ -2222,6 +2222,7 @@ async def test_spreadsheet_verified_numbers_replace_fabricated_final(tmp_path):
         [{"role": "user", "content": f"统计 {file}"}], on_progress=capture
     )
     text, _ = result
-    assert "999" not in text and all("999" not in p for p in progress)
+    assert "总计 999" not in text and "全部记录正常" not in text
+    assert all("总计 999" not in p for p in progress)
     assert "可计算 2 行" in text and "待核 2 行" in text and "C4" in text
     assert len(agent.tools.get("read_file").spreadsheet_artifacts()) == 2

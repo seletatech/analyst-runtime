@@ -505,6 +505,5 @@ def render_report(result, filename, artifact):
     lines += [
         "",
         f"完整计算口径、全部分组及逐行去向：[{filename} 核对明细]({artifact})。",
-        f"原文件 SHA-256：`{result['input_sha256']}`。",
     ]
     return "\n".join(lines)

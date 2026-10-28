@@ -278,7 +278,7 @@ class ReadFileTool(Tool):
         ):
             raise PermissionError("Spreadsheet artifact path is outside its workspace")
         folder.mkdir(parents=True, exist_ok=True)
-        artifact = folder / (path.stem + "-" + original_hash[:8] + "-核对明细.json")
+        artifact = folder / (path.stem + "-核对明细.json")
         if artifact.is_symlink() or artifact.with_suffix(".csv").is_symlink():
             raise PermissionError("Spreadsheet artifact symbolic links are forbidden")
         artifact.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")

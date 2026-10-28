@@ -107,6 +107,7 @@ async def test_authorized_read_gate_binds_input_and_export_and_conversation(tmp_
     assert r["counts"]["pending"] == 2
     report, hint = tool.spreadsheet_delivery()
     assert hint is None and "C4" in report and "Hidden" in report
+    assert hashlib.sha256(book()).hexdigest() not in report
     assert len(tool.spreadsheet_artifacts()) == 2
     artifact = next(
         __import__("pathlib").Path(p) for p in tool.spreadsheet_artifacts() if p.endswith(".csv")
