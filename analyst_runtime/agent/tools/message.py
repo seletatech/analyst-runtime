@@ -4,6 +4,7 @@ import json
 from contextvars import ContextVar
 from typing import Any, Awaitable, Callable
 
+from analyst_runtime.agent.tools.account_access import account_workspace
 from analyst_runtime.agent.tools.base import Tool
 from analyst_runtime.bus.delivery import DeliveryAcknowledgement
 from analyst_runtime.bus.events import OutboundMessage
@@ -84,13 +85,21 @@ class MessageTool(Tool):
         if not self._send_callback:
             return "Error: Message sending not configured"
 
+        scope = account_workspace()
+        if scope is not None:
+            if channel != default_channel or chat_id != default_chat_id:
+                return "Error: Account messages must stay in the authenticated conversation"
+            try:
+                media = [str(scope.resolve(path)) for path in media or []]
+            except PermissionError as error:
+                return f"Error: {error}"
         delivery = DeliveryAcknowledgement() if media else None
         msg = OutboundMessage(
             channel=channel,
             chat_id=chat_id,
             content=content,
             media=media or [],
-            metadata={"intermediate": True, "phase": "delivery"},
+            metadata={"intermediate": True, "phase": "delivery", **({"_authenticated_user_id": scope.user_id} if scope else {})},
             delivery=delivery,
         )
 

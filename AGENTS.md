@@ -42,3 +42,11 @@ User-approved: read_file may read ZIP members and convert common Office files in
 PDF pages with bounded, isolated native parsing. Text and page images remain in the
 same Runtime loop, bound to the original owner/conversation/hash. Upload intake has
 no format allowlist and a 100 MB per-file limit; upload success never proves parsing.
+
+## Authenticated account file history
+
+A trusted product gateway may supply an authenticated account UUID in transport metadata.
+It grants access to that account's uploads across conversations while retaining source
+conversation/hash provenance. Scope all ordinary file tools, message attachments and exec;
+never derive account authority from model arguments, user prose or upload content. Products
+requiring account scope must fail closed on missing identity or unavailable kernel isolation.

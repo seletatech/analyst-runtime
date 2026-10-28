@@ -4,7 +4,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
-from zipfile import ZipFile, ZipInfo, ZIP_DEFLATED
+from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 import pytest
 
