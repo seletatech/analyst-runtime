@@ -76,6 +76,36 @@ async def office_pdf(content: bytes, suffix: str) -> bytes:
         (profile / "user/registrymodifications.xcu").write_text(
             """<?xml version="1.0"?><oor:items xmlns:oor="http://openoffice.org/2001/registry"><item oor:path="/org.openoffice.Office.Common/Security/Scripting"><prop oor:name="MacroSecurityLevel" oor:op="fuse"><value>3</value></prop></item><item oor:path="/org.openoffice.Office.Writer/Content/Update"><prop oor:name="Link" oor:op="fuse"><value>0</value></prop></item><item oor:path="/org.openoffice.Office.Calc/Content/Update"><prop oor:name="Link" oor:op="fuse"><value>0</value></prop></item></oor:items>"""
         )
+        env = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "HOME": str(root),
+            "LANG": "C.UTF-8",
+            "TMPDIR": str(root),
+            "SAL_USE_VCLPLUGIN": "svp",
+        }
+        # Initialize only our empty profile before exposing untrusted input. A first-run
+        # LibreOffice restart needs to replace its IPC socket outside the file sandbox.
+        initialize = await asyncio.create_subprocess_exec(
+            "soffice",
+            "-env:UserInstallation=" + profile.as_uri(),
+            "--headless",
+            "--terminate_after_init",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            env=env,
+            start_new_session=True,
+        )
+        try:
+            await asyncio.wait_for(initialize.wait(), 45)
+        except BaseException:
+            if initialize.returncode is None:
+                import signal
+
+                os.killpg(initialize.pid, signal.SIGKILL)
+            await initialize.wait()
+            raise
+        if initialize.returncode:
+            raise ValueError("Cannot initialize the document parser")
         source = root / ("source" + suffix)
         source.write_bytes(content)
         process = await asyncio.create_subprocess_exec(
@@ -92,11 +122,7 @@ async def office_pdf(content: bytes, suffix: str) -> bytes:
             str(source),
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
-            env={
-                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-                "HOME": str(root),
-                "LANG": "C.UTF-8",
-            },
+            env=env,
             start_new_session=True,
             preexec_fn=(lambda: isolate_office(directory)) if os.sys.platform == "linux" else None,
         )
@@ -109,6 +135,19 @@ async def office_pdf(content: bytes, suffix: str) -> bytes:
                 os.killpg(process.pid, signal.SIGKILL)
             await process.wait()
             raise
+        # Remove only this random profile's exact IPC socket (the child cannot unlink /tmp).
+        if os.sys.platform == "linux":
+            digest = hashlib.md5(
+                profile.as_uri().encode("utf-16-le"), usedforsecurity=False
+            ).digest()
+            pipe = Path("/tmp") / (
+                f"OSL_PIPE_{os.getuid()}_SingleOfficeIPC_" + "".join(format(b, "x") for b in digest)
+            )
+            try:
+                if pipe.is_socket():
+                    pipe.unlink()
+            except FileNotFoundError:
+                pass
         pdf = root / "source.pdf"
         if process.returncode or not pdf.is_file() or pdf.stat().st_size > MAX_BYTES:
             raise ValueError(
