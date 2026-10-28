@@ -35,3 +35,10 @@ User-approved exception: trusted-analysis may use its existing read_file tool to
 a PDF page's text and supply its rendered image to a vision-capable model in the same
 Runtime loop. This does not enable generic vision/audio tools or a second model loop.
 PDF sources and pages remain untrusted evidence, owner/conversation-scoped for uploads.
+
+## Office/ZIP reads (2026-10-28)
+
+User-approved: read_file may read ZIP members and convert common Office files into
+PDF pages with bounded, isolated native parsing. Text and page images remain in the
+same Runtime loop, bound to the original owner/conversation/hash. Upload intake has
+no format allowlist and a 100 MB per-file limit; upload success never proves parsing.
