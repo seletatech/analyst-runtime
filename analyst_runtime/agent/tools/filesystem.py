@@ -1,8 +1,12 @@
 """File system tools: read, write, edit, append, and patch."""
 
+import asyncio
 import hashlib
 import json
 import os
+import re
+import shutil
+import tempfile
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from pathlib import Path
@@ -10,7 +14,73 @@ from typing import Any
 
 from analyst_runtime.agent.tools.account_access import account_workspace
 from analyst_runtime.agent.tools.base import Tool
-from analyst_runtime.agent.tools.documents import DOCUMENT_SUFFIXES, read_document, read_text
+from analyst_runtime.agent.tools.document_isolation import isolate_office
+from analyst_runtime.agent.tools.documents import (
+    DOCUMENT_SUFFIXES,
+    archive_entries,
+    read_document,
+    read_text,
+)
+
+
+async def _read_excel_cells(content: bytes, sheet: str | None, cells: str | None, source: dict) -> str:
+    if not isinstance(sheet, str) or not sheet or len(sheet) > 31:
+        raise ValueError("A worksheet name is required")
+    match = re.fullmatch(r"([A-Z]{1,3})([1-9][0-9]{0,6})(?::([A-Z]{1,3})([1-9][0-9]{0,6}))?", cells or "")
+    if not match:
+        raise ValueError("Expected a bounded Excel range such as A2:F2")
+    def col(value: str) -> int:
+        result = 0
+        for char in value:
+            result = result * 26 + ord(char) - 64
+        return result
+    left, top = col(match[1]), int(match[2])
+    right, bottom = col(match[3] or match[1]), int(match[4] or match[2])
+    if right > 16384 or bottom > 1048576 or right < left or bottom != top or right-left+1 > 500:
+        raise ValueError("Excel citations require one row of at most 500 cells within worksheet bounds")
+    archive, _ = archive_entries(content)
+    archive.close()
+    normalized = f"{match[1]}{top}:{match[3] or match[1]}{bottom}"
+    with tempfile.TemporaryDirectory(prefix="analyst-xlsx-read-") as directory:
+        snapshot = Path(directory) / "source.xlsx"
+        snapshot.write_bytes(content)
+        payload = {"filepath": str(snapshot), "sheet_name": sheet, "range": normalized,
+                   "filters": [{"column": "1", "operator": "regex", "value": ".*"}], "has_header": False}
+        executable = shutil.which("excel-mcp")
+        if not executable:
+            raise ValueError("Excel reader is unavailable")
+        process = await asyncio.create_subprocess_exec(
+            executable, "cli", "filter_rows", "--input", "-",
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+            env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": directory},
+            preexec_fn=(lambda: isolate_office(directory, readonly_paths=(executable,), local_sockets=False)) if os.sys.platform == "linux" else None,
+        )
+        try:
+            assert process.stdin is not None and process.stdout is not None
+            process.stdin.write(json.dumps(payload).encode())
+            await process.stdin.drain()
+            process.stdin.close()
+            try:
+                stdout = await asyncio.wait_for(process.stdout.readexactly(100_001), 30)
+            except asyncio.IncompleteReadError as error:
+                stdout = error.partial
+            if len(stdout) > 100_000:
+                raise ValueError("Excel range output exceeds the read limit")
+            await asyncio.wait_for(process.wait(), 30)
+        except BaseException:
+            if process.returncode is None:
+                process.kill()
+            await process.wait()
+            raise
+        if process.returncode:
+            raise ValueError("Excel range could not be read or is too large")
+        value = json.loads(stdout)
+        if not isinstance(value, dict) or value.get("sheet_name") != sheet or value.get("range") != normalized or not isinstance(value.get("rows"), list) or len(value["rows"]) > 1:
+            raise ValueError("Excel returned an invalid range")
+        source.pop("content", None)
+        return json.dumps({**source, "format": "excel", "sheet": sheet, "cells": normalized,
+                           "content": value["rows"], "notice": "column_1 starts at the first requested column; headers and merged-cell meaning require separate checks."}, ensure_ascii=False)
 
 
 def _read_bytes(path: Path) -> bytes:
@@ -103,7 +173,7 @@ class ReadFileTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Read text files or one PDF page (text and, for vision models, its image). ZIP: omit member to list entries, then pass member=exact_name. Office/HTML/PDF page defaults to 1; use page=N to read all required pages. PDFs are limited to 100 MB and 200 pages."
+        return "Read text files or one PDF page (text and, for vision models, its image). ZIP: omit member to list entries, then pass member=exact_name. Office/HTML/PDF page defaults to 1; use page=N to read all required pages. For uploaded Excel files, sheet and cells read a bounded exact range. PDFs are limited to 100 MB and 200 pages."
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -115,6 +185,8 @@ class ReadFileTool(Tool):
                     "description": "Exact ZIP entry name; omit to list entries",
                 },
                 "path": {"type": "string", "description": "The file path to read"},
+                "sheet": {"type": "string", "description": "Excel worksheet name for a bounded cell read"},
+                "cells": {"type": "string", "description": "Single Excel row such as A2:F2, at most 500 cells"},
                 "page": {
                     "type": "integer",
                     "minimum": 1,
@@ -125,7 +197,8 @@ class ReadFileTool(Tool):
         }
 
     async def execute(
-        self, path: str, page: int = 1, member: str | None = None, **kwargs: Any
+        self, path: str, page: int = 1, member: str | None = None,
+        sheet: str | None = None, cells: str | None = None, **kwargs: Any
     ) -> str:
         read_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         try:
@@ -152,6 +225,13 @@ class ReadFileTool(Tool):
             if is_document and file_path.stat().st_size > 100 * 1024 * 1024:
                 raise ValueError("Document exceeds 100 MB")
             content_bytes = _read_bytes(file_path)
+            if sheet is not None or cells is not None:
+                if not audit_upload or file_path.suffix.lower() not in {".xlsx", ".xlsm"} or member is not None:
+                    raise ValueError("Cell reads require a conversation-scoped Excel upload")
+                source = json.loads(self._audited_content(file_path, content_bytes, read_at, binary_pdf=True))
+                if source.get("status") != "ok":
+                    return json.dumps(source)
+                return await _read_excel_cells(content_bytes, sheet, cells, source)
             if is_document:
                 source = {
                     "schema_version": "analyst-read-result/v1",
@@ -292,6 +372,7 @@ class ReadFileTool(Tool):
                 "conversation_id": conversation_id,
                 "version": manifest.get("version"),
                 "uploaded_at": (manifest.get("source") or {}).get("received_at") if isinstance(manifest.get("source"), dict) and (manifest.get("source") or {}).get("received_at") else manifest.get("created_at"),
+                "source_pathname": (manifest.get("source") or {}).get("pathname") if isinstance(manifest.get("source"), dict) else None,
                 "read_at": read_at,
                 "content": decoded,
             },

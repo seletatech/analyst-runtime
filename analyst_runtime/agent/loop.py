@@ -19,6 +19,12 @@ from analyst_runtime.agent.analysis_context import (
     AnalysisArtifactError,
     AnalysisArtifactStore,
 )
+from analyst_runtime.agent.citation_refs import (
+    annotate_history,
+    citation_from_read,
+    cited_refs,
+    uncited_summary,
+)
 from analyst_runtime.agent.context import ContextBuilder
 from analyst_runtime.agent.evidence_refs import collect_evidence_refs
 from analyst_runtime.agent.memory import ProtectedMemorySection
@@ -1291,6 +1297,7 @@ class AgentLoop:
         model: str | None = None,
         execution_key: str | None = None,
         allow_tools: bool = True,
+        citation_conversation_id: str | None = None,
     ) -> AgentLoopResult:
         """
         Run the agent iteration loop.
@@ -1319,6 +1326,8 @@ class AgentLoop:
         _real_iterations = 0  # iterations with at least one real (non-malformed) tool call
         _had_midtask_continuation = False  # one-shot: prevents infinite retry on text-only stops
         _delivery_recovery_attempts = 0  # bounded retries for missing final report bodies
+        _citation_recovery_attempted = False
+        _issued_citation_ids: set[str] = set()
         _completed_guarded_tool_calls: dict[str, str] = {}
         terminal_reason = "iteration_limit"
         terminal_error_code: str | None = None
@@ -1513,6 +1522,15 @@ class AgentLoop:
                     context_result = self._save_tool_result(
                         tool_call.id, sanitized_name, result
                     )
+                    citation_ref = None
+                    if (self.tool_profile == "trusted-analysis" and citation_conversation_id
+                            and sanitized_name == "read_file" and terminal_status == "completed"):
+                        citation_ref = citation_from_read(
+                            result, self.workspace, citation_conversation_id, tool_call.id
+                        )
+                        if citation_ref:
+                            _issued_citation_ids.add(citation_ref["id"])
+                            context_result += f"\nCitation token for this read: [[cite:{citation_ref['id']}]]"
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, sanitized_name, context_result
                     )
@@ -1548,6 +1566,7 @@ class AgentLoop:
                                 "tool_input": tool_call.arguments,
                                 "content": ref_content,
                                 "status": terminal_status,
+                                "citation_ref": citation_ref,
                             }
                         )
                         parent_uuid = tr_uuid
@@ -1800,6 +1819,25 @@ class AgentLoop:
                     messages = steered_messages
                     final_content = None
                     continue
+
+                if final_content and uncited_summary(final_content, _issued_citation_ids):
+                    if not _citation_recovery_attempted and iteration < self.max_iterations:
+                        _citation_recovery_attempted = True
+                        messages = self.context.add_assistant_message(
+                            messages, final_content, None, reasoning_content=response.reasoning_content
+                        )
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "请修订刚才的回答：结论或摘要中每项资料事实和数字都要在相应句旁"
+                                "使用支持该事实的已读来源引用标识；跨文件结论需引用各相关来源。"
+                                "不得猜测引用关系或编造标识；无法确定时明确说明。保留事实与建议的区分。"
+                            ),
+                        })
+                        record_retry("uncited_summary")
+                        final_content = None
+                        continue
+                    final_content = "摘要未附可核验引用，请以正文中标注来源的事实为准。\n\n" + final_content
 
                 logger.info(
                     "Agent loop ended at iteration {}: finish_reason={} tools_used={} "
@@ -2328,6 +2366,9 @@ class AgentLoop:
         confirmed_question = None
         if self.request_router.is_trusted_gateway(msg):
             confirmed_question = self._remember_confirmed_semantics(msg.content, history_snapshot)
+        history_refs = []
+        if self.tool_profile == "trusted-analysis" and msg.conversation_id:
+            history_snapshot, history_refs = annotate_history(history_snapshot, session.events, msg.conversation_id)
         analysis_question = confirmed_question or msg.content
         confirmed_semantics_sha256 = (
             self._confirmed_semantics_sha256(analysis_question) or "unavailable"
@@ -2511,6 +2552,7 @@ class AgentLoop:
                 model=active_model,
                 execution_key=msg.execution_key,
                 allow_tools=not interpretation_only,
+                citation_conversation_id=msg.conversation_id,
             )
         final_content, tools_used = loop_result
 
@@ -2632,6 +2674,7 @@ class AgentLoop:
                 turn_events, self.workspace, final_content, active_analysis_id
             )
         outbound_metadata["evidence_refs"] = evidence_refs
+        outbound_metadata["citation_refs"] = cited_refs(turn_events, final_content, history_refs)
         if terminal_error_code:
             outbound_metadata["error_code"] = terminal_error_code
         if msg.channel == "telegram":

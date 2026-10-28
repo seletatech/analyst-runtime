@@ -2129,3 +2129,77 @@ async def test_pdf_images_follow_complete_tool_batch_without_leaking_to_trace(tm
     assert roles[:5] == ['user', 'assistant', 'tool', 'tool', 'user']
     assert len(messages[4]['content']) == 2
     assert 'TEST_PRIVATE_IMAGE' not in json.dumps(progress)
+
+
+@pytest.mark.asyncio
+async def test_citation_token_is_issued_by_read_and_bound_to_tool_event(tmp_path: Path) -> None:
+    import re
+
+    from analyst_runtime.agent.citation_refs import cited_refs
+
+    upload = tmp_path / 'uploads' / 'user' / 'conversation' / 'version'
+    upload.mkdir(parents=True)
+    source = upload / 'record.txt'
+    source.write_text('原始事实', encoding='utf-8')
+    (upload / '.manifest.json').write_text(json.dumps({
+        'content_sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
+        'conversation_id': 'conversation', 'version': 'version', 'user_id': 'user',
+        'schema_version': 'analyst-runtime-workspace-upload/v1', 'workspace_path': str(source),
+    }))
+
+    class Provider(_SequenceProvider):
+        async def chat(self, messages, **kwargs):
+            if not self.calls:
+                self.calls.append(messages)
+                return LLMResponse(content=None, tool_calls=[ToolCallRequest(id='read-one', name='read_file', arguments={'path': str(source)})])
+            self.calls.append(messages)
+            token = re.search(r'\[\[cite:[a-f0-9]{24}\]\]', str(messages))
+            assert token is not None
+            return LLMResponse(content=f'原始事实 {token.group()}', finish_reason='stop')
+
+    provider = Provider([])
+    agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, tool_profile='trusted-analysis')
+    agent._set_tool_context('web', 'chat', analysis_conversation_id='conversation')
+    session = SessionManager(tmp_path).get_or_create('web:chat')
+    result = await agent._run_agent_loop([{'role': 'user', 'content': '读取文件'}], session=session,
+                                         request_uuid='request', citation_conversation_id='conversation')
+    refs = cited_refs(session.events, result.content)
+    assert len(refs) == 1 and refs[0]['sha256'] == hashlib.sha256(source.read_bytes()).hexdigest()
+    assert refs[0]['path'].endswith('/record.txt')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("corrects_summary", [True, False])
+async def test_uncited_summary_gets_one_repair_in_same_loop(tmp_path: Path, corrects_summary: bool) -> None:
+    import re
+
+    upload = tmp_path / 'uploads' / 'user' / 'conversation' / 'version'
+    upload.mkdir(parents=True)
+    source = upload / 'record.txt'
+    source.write_text('原始事实', encoding='utf-8')
+    (upload / '.manifest.json').write_text(json.dumps({
+        'content_sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
+        'conversation_id': 'conversation', 'version': 'version', 'user_id': 'user',
+        'schema_version': 'analyst-runtime-workspace-upload/v1', 'workspace_path': str(source),
+    }))
+
+    class Provider(_SequenceProvider):
+        async def chat(self, messages, **kwargs):
+            self.calls.append(list(messages))
+            if len(self.calls) == 1:
+                return LLMResponse(content=None, tool_calls=[ToolCallRequest(
+                    id='read-one', name='read_file', arguments={'path': str(source)}
+                )])
+            token = re.search(r'\[\[cite:[a-f0-9]{24}\]\]', str(messages)).group()
+            summary = f'原始事实 {token}' if corrects_summary and len(self.calls) == 3 else '原始事实'
+            return LLMResponse(content=f'## 结论\n\n{summary}\n\n## 证据\n分析已完成，原始事实 {token}', finish_reason='stop')
+
+    provider = Provider([])
+    agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, tool_profile='trusted-analysis')
+    agent._set_tool_context('web', 'chat', analysis_conversation_id='conversation')
+    session = SessionManager(tmp_path).get_or_create('web:chat')
+    result = await agent._run_agent_loop([{'role': 'user', 'content': '读取文件'}], session=session,
+                                         request_uuid='request', citation_conversation_id='conversation')
+    assert len(provider.calls) == 3
+    assert any(event.get('reason') == 'uncited_summary' for event in session.events)
+    assert ('摘要未附可核验引用' in result.content) is (not corrects_summary)
