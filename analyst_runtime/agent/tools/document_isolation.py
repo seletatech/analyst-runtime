@@ -34,6 +34,9 @@ def isolate_office(directory: str):
         readonly = (1 << 0) | (1 << 2) | (1 << 3)
         for path, access in [
             (directory, mask),
+            # LibreOffice uses a hashed AF_UNIX IPC socket in /tmp, even with TMPDIR.
+            # Only socket creation is permitted here; file read/write/remove stay denied.
+            ("/tmp", 1 << 9),
             ("/usr", readonly),
             ("/lib", readonly),
             ("/lib64", readonly),
