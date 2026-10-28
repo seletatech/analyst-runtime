@@ -51,8 +51,8 @@ async def _command(*args: str) -> bytes:
 
 
 async def read_pdf_page(content: bytes, *, page: int, vision: bool, source: dict) -> PdfReadResult:
-    if not content.startswith(b"%PDF-") or not 0 < len(content) <= 25 * 1024 * 1024:
-        raise ValueError("PDF must be valid and no larger than 25 MB")
+    if not content.startswith(b"%PDF-") or not 0 < len(content) <= 100 * 1024 * 1024:
+        raise ValueError("PDF must be valid and no larger than 100 MB")
     if isinstance(page, bool) or not isinstance(page, int) or page < 1:
         raise ValueError("PDF page must be a positive one-based integer")
     with tempfile.TemporaryDirectory(prefix="analyst-pdf-") as directory:
