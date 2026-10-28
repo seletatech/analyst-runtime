@@ -49,6 +49,7 @@ dependencies = [
     "json-repair>=0.57.0,<1.0.0",
     "caldav>=1.4.0,<2.0.0",
     "segno>=1.6.0,<2.0.0",
+    "xlrd==2.0.2",
 ]
 
 [project.optional-dependencies]
