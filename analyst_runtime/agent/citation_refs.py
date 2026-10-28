@@ -11,6 +11,23 @@ from typing import Any
 from analyst_runtime.agent.tools.account_access import account_workspace
 
 CITATION_TOKEN = re.compile(r"\[\[cite:([a-f0-9]{24})\]\]")
+SUMMARY_HEADING = re.compile(r"(?m)^\s*(?:#{1,6}\s*|\*\*)?(?:结论|摘要|总结)(?:\*\*)?\s*[：:]?\s*")
+
+
+def uncited_summary(answer: str, issued_ids: set[str]) -> bool:
+    """Detect an identifiable summary lacking a reference when cited evidence exists.
+
+    This is a narrow presentation check, not a claim-to-evidence verifier.
+    """
+    if not any(match.group(1) in issued_ids for match in CITATION_TOKEN.finditer(answer)):
+        return False
+    heading = SUMMARY_HEADING.search(answer)
+    if not heading:
+        return False
+    paragraph = re.split(r"\n\s*\n|\n#{1,6}\s", answer[heading.end():], maxsplit=1)[0]
+    if not paragraph.strip():
+        return False
+    return not any(match.group(1) in issued_ids for match in CITATION_TOKEN.finditer(paragraph))
 
 
 def bounded_excel_range(value: str) -> bool:

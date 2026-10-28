@@ -1,7 +1,17 @@
 import hashlib
 import json
 
-from analyst_runtime.agent.citation_refs import citation_from_read, cited_refs
+from analyst_runtime.agent.citation_refs import citation_from_read, cited_refs, uncited_summary
+
+
+def test_summary_guard_requires_an_issued_citation_in_the_summary():
+    token = f"[[cite:{'a' * 24}]]"
+    issued = {'a' * 24}
+    assert uncited_summary(f"## 结论\n\n客户待验证。\n\n## 事实\n客户待验证 {token}", issued)
+    assert not uncited_summary(f"**结论**：客户待验证 {token}\n\n## 事实\n客户待验证 {token}", issued)
+    assert not uncited_summary("## 结论\n\n纯建议。", issued)
+    assert not uncited_summary(f"## 事实\n客户待验证 {token}", issued)
+    assert not uncited_summary(f"## 结论\n\n客户待验证。\n\n## 事实\n{token}", set())
 
 
 def test_audited_read_requires_same_conversation_and_unchanged_file(tmp_path):
