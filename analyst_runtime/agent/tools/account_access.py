@@ -1,6 +1,7 @@
 """Authenticated account file scope shared by ordinary workspace tools."""
 
 import errno
+import hashlib
 import json
 import os
 import stat
@@ -14,10 +15,35 @@ from uuid import UUID
 class AccountWorkspace:
     workspace: Path
     user_id: str
+    snapshot_run_id: str | None = None
+    snapshot_sha256: str | None = None
 
     def __post_init__(self):
         object.__setattr__(self, "workspace", self.workspace.resolve())
         object.__setattr__(self, "user_id", str(UUID(self.user_id)))
+        if self.snapshot_run_id:
+            object.__setattr__(self, "snapshot_run_id", str(UUID(self.snapshot_run_id)))
+            root = self.workspace / "library-snapshots"
+            for candidate in [root, root / self.user_id, self.data]:
+                if candidate.is_symlink() or not candidate.is_dir():
+                    raise PermissionError("Invalid library snapshot directory")
+            source = self.data / "manifest.json"
+            if source.is_symlink():
+                raise PermissionError("Invalid library snapshot manifest")
+            content = source.read_bytes()
+            if len(content) > 8 * 1024 * 1024 or hashlib.sha256(content).hexdigest() != self.snapshot_sha256:
+                raise PermissionError("Library snapshot identity mismatch")
+            manifest = json.loads(content)
+            if manifest.get("schema_version") != "linghui-library-snapshot/v1" or manifest.get("user_id") != self.user_id or manifest.get("run_id") != self.snapshot_run_id:
+                raise PermissionError("Library snapshot owner mismatch")
+        elif self.snapshot_sha256:
+            raise PermissionError("Library snapshot run identity missing")
+
+    @property
+    def data(self) -> Path:
+        if self.snapshot_run_id:
+            return self.workspace / "library-snapshots" / self.user_id / self.snapshot_run_id
+        return self.workspace / "data"
 
     @property
     def uploads(self) -> Path:
@@ -25,11 +51,12 @@ class AccountWorkspace:
 
     @property
     def private(self) -> Path:
-        return self.workspace / "tmp_analysis" / "accounts" / self.user_id
+        root = self.workspace / "tmp_analysis" / "accounts" / self.user_id
+        return root / "runs" / self.snapshot_run_id if self.snapshot_run_id else root
 
     @property
     def shared(self) -> list[Path]:
-        return [self.workspace / name for name in ["data", "skills", "bin", "AGENTS.md", "SOUL.md", "README.md"]]
+        return [self.data, *[self.workspace / name for name in ["skills", "bin", "AGENTS.md", "SOUL.md", "README.md"]]]
 
     def prepare(self) -> None:
         for path in [self.uploads, self.private, self.private / "tmp_analysis", self.private / "artifacts"]:
@@ -42,7 +69,7 @@ class AccountWorkspace:
         for target in [*self.shared, self.uploads]:
             if not target.exists():
                 continue
-            link = self.private / target.name
+            link = self.private / ("data" if target == self.data else target.name)
             if target == self.uploads:
                 link = self.private / "uploads"
             if link.is_symlink() and link.resolve() == target.resolve():
@@ -58,7 +85,7 @@ class AccountWorkspace:
             if parts and parts[0] == "uploads":
                 path = self.workspace / path if len(parts) > 1 and parts[1] == self.user_id else self.uploads.joinpath(*parts[1:])
             elif parts and parts[0] in {"data", "skills", "bin", "AGENTS.md", "SOUL.md", "README.md"}:
-                path = self.workspace / path
+                path = self.data.joinpath(*parts[1:]) if parts[0] == "data" else self.workspace / path
             else:
                 path = self.private / path
         resolved = path.resolve()
@@ -156,9 +183,15 @@ def account_workspace() -> AccountWorkspace | None:
     return _current.get()
 
 
-def bind_account_workspace(workspace: Path, user_id: str | None) -> None:
+def bind_account_workspace(workspace: Path, user_id: str | None, library_snapshot: dict | None = None, run_id: str | None = None) -> None:
     _current.set(None)
+    if library_snapshot and not user_id:
+        raise PermissionError("Library snapshot requires authenticated account identity")
     if user_id:
-        scope = AccountWorkspace(workspace, user_id)
+        if library_snapshot is not None and (not isinstance(library_snapshot, dict) or library_snapshot.get("run_id") != run_id):
+            raise PermissionError("Library snapshot must match the authenticated run")
+        scope = AccountWorkspace(workspace, user_id,
+                                 library_snapshot.get("run_id") if library_snapshot else None,
+                                 library_snapshot.get("manifest_sha256") if library_snapshot else None)
         scope.prepare()
         _current.set(scope)

@@ -176,6 +176,10 @@ class AgentLoop:
             )
 
         def data_release_hash() -> str:
+            from analyst_runtime.agent.tools.account_access import account_workspace
+            scope = account_workspace()
+            if scope is not None and scope.snapshot_sha256:
+                return scope.snapshot_sha256
             data_root = self.workspace / "data"
             manifest = data_root / "manifest.json"
             if not manifest.is_file():
@@ -670,10 +674,11 @@ class AgentLoop:
         analysis_conversation_id: str | None = None,
         run_id: str | None = None,
         account_user_id: str | None = None,
+        library_snapshot: dict | None = None,
     ) -> None:
         """Update context for all tools that need routing info."""
         from analyst_runtime.agent.tools.account_access import bind_account_workspace
-        bind_account_workspace(self.workspace, account_user_id)
+        bind_account_workspace(self.workspace, account_user_id, library_snapshot, run_id)
         if message_tool := self.tools.get("message"):
             if isinstance(message_tool, MessageTool):
                 message_tool.set_context(channel, chat_id)
@@ -2114,13 +2119,23 @@ class AgentLoop:
             return await self._process_system_message(msg)
 
         account_user_id = msg.metadata.get("_authenticated_user_id") if self.request_router.is_trusted_gateway(msg) else None
+        library_snapshot = msg.metadata.get("_library_snapshot") if self.request_router.is_trusted_gateway(msg) else None
         if self.tool_profile == "trusted-analysis" and os.environ.get("ANALYST_RUNTIME_REQUIRE_ACCOUNT_SCOPE", "").lower() == "true" and not account_user_id:
             from analyst_runtime.agent.tools.account_access import bind_account_workspace
             bind_account_workspace(self.workspace, None)
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, run_id=msg.run_id,
                 content="无法验证账号文件权限，请重新登录后重试。", metadata={"error_code": "ANALYST-RUNTIME-ACCOUNT-001"})
         from analyst_runtime.agent.tools.account_access import bind_account_workspace
-        bind_account_workspace(self.workspace, account_user_id)
+        if os.environ.get("ANALYST_RUNTIME_REQUIRE_LIBRARY_SNAPSHOT", "").lower() == "true" and not library_snapshot:
+            bind_account_workspace(self.workspace, None)
+            return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, run_id=msg.run_id,
+                content="知识库分析版本尚未准备好，请稍后重试。", metadata={"error_code": "ANALYST-RUNTIME-LIBRARY-001"})
+        try:
+            bind_account_workspace(self.workspace, account_user_id, library_snapshot, msg.run_id)
+        except (OSError, ValueError, TypeError):
+            bind_account_workspace(self.workspace, None)
+            return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, run_id=msg.run_id,
+                content="无法验证本次知识库文件权限或版本。", metadata={"error_code": "ANALYST-RUNTIME-LIBRARY-001"})
 
         preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
         logger.info(f"Processing message from {msg.channel}:{msg.sender_id}: {preview}")
@@ -2297,6 +2312,7 @@ class AgentLoop:
             analysis_conversation_id=msg.conversation_id,
             run_id=msg.run_id,
             account_user_id=account_user_id,
+            library_snapshot=library_snapshot,
         )
 
         # Capture history BEFORE emitting the current user_input event.

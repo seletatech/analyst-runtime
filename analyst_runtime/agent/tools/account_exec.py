@@ -1,6 +1,7 @@
 """Fail-closed Linux child-process boundary for account-scoped exec."""
 
 import os
+import json
 import runpy
 import sys
 from pathlib import Path
@@ -12,7 +13,8 @@ def main():
     tools = Path(__file__).resolve().parent
     scope_type = runpy.run_path(str(tools / "account_access.py"))["AccountWorkspace"]
     isolate = runpy.run_path(str(tools / "document_isolation.py"))["isolate_office"]
-    scope = scope_type(Path(sys.argv[1]), sys.argv[2])
+    snapshot = json.loads(sys.argv[4]) if len(sys.argv) > 4 else {}
+    scope = scope_type(Path(sys.argv[1]), sys.argv[2], snapshot.get("run_id"), snapshot.get("manifest_sha256"))
     public = [Path(p).resolve() for p in ["/usr", "/lib", "/lib64", "/bin", "/etc/fonts", sys.prefix]]
     if any(scope.workspace.is_relative_to(path) for path in public):
         raise PermissionError("Account workspace overlaps public runtime libraries")

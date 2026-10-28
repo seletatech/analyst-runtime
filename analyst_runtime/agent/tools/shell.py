@@ -1,6 +1,7 @@
 """Shell execution tool."""
 
 import asyncio
+import json
 import os
 import re
 import signal
@@ -159,7 +160,8 @@ class ExecTool(Tool):
             if scope is not None:
                 process = await asyncio.create_subprocess_exec(
                     sys.executable, "-I", str(Path(__file__).with_name("account_exec.py")),
-                    str(scope.workspace), scope.user_id, command, **process_options,
+                    str(scope.workspace), scope.user_id, command,
+                    json.dumps({"run_id": scope.snapshot_run_id, "manifest_sha256": scope.snapshot_sha256}), **process_options,
                 )
             elif sandbox_profile is not None:
                 process = await asyncio.create_subprocess_exec(
