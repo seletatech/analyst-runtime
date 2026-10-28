@@ -73,7 +73,11 @@ class AccountWorkspace:
         return [self.data, *[self.workspace / name for name in ["skills", "bin", "AGENTS.md", "SOUL.md", "README.md"]]]
 
     def prepare(self) -> None:
-        for path in [self.uploads, self.private, self.private / "tmp_analysis", self.private / "artifacts"]:
+        # Uploads are API-owned and mounted read-only. A new account may have none.
+        for path in [self.workspace / "uploads", self.uploads]:
+            if path.is_symlink() or (path.exists() and not path.is_dir()):
+                raise PermissionError("Account upload directories must not contain symbolic links")
+        for path in [self.private, self.private / "tmp_analysis", self.private / "artifacts"]:
             parent = self.workspace
             for part in path.relative_to(self.workspace).parts:
                 parent = parent / part

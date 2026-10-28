@@ -2,6 +2,8 @@ import hashlib
 import json
 import shlex
 import sys
+import errno
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -18,6 +20,33 @@ def snapshot(root, user, run, value):
     manifest = json.dumps({"schema_version": "linghui-library-snapshot/v1", "user_id": user, "run_id": run, "files": []}).encode()
     (directory / "manifest.json").write_bytes(manifest)
     return {"run_id": run, "manifest_sha256": hashlib.sha256(manifest).hexdigest()}
+
+
+def test_new_account_can_analyze_with_read_only_upload_mount(tmp_path, monkeypatch):
+    user, run = str(uuid4()), str(uuid4())
+    identity = snapshot(tmp_path, user, run, "company original")
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    original_mkdir = Path.mkdir
+
+    def readonly_mkdir(path, *args, **kwargs):
+        if path.is_relative_to(uploads) and not path.exists():
+            raise OSError(errno.EROFS, "Read-only file system", str(path))
+        return original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", readonly_mkdir)
+    try:
+        bind_account_workspace(tmp_path, user, identity, run)
+        scope = account_workspace()
+        assert scope.resolve("data/original.txt").read_text() == "company original"
+        assert scope.private.is_dir()
+        assert not scope.uploads.exists()
+        assert json.loads(scope.catalog())["total"] == 0
+        (uploads / user).symlink_to(scope.data, target_is_directory=True)
+        with pytest.raises(PermissionError, match="symbolic"):
+            bind_account_workspace(tmp_path, user, identity, run)
+    finally:
+        bind_account_workspace(tmp_path, None)
 
 
 @pytest.mark.asyncio
