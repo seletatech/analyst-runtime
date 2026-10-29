@@ -2253,3 +2253,50 @@ async def test_applied_steer_and_request_survive_later_lossy_compaction(tmp_path
     assert any(steer.content in content for content in users)
     assert sum("Keep all five rolls in scope."==content for content in users)==1
     assert (await bus.consume_outbound()).metadata["control"]=="steer_applied"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('corrects_token', [True, False])
+async def test_unknown_citation_gets_one_repair_without_guessing_identity(tmp_path, corrects_token):
+    import re
+    from analyst_runtime.agent.citation_refs import cited_refs
+    upload = tmp_path / 'uploads/user/conversation/version'
+    upload.mkdir(parents=True)
+    source = upload / 'record.txt'
+    source.write_text('original fact')
+    (upload / '.manifest.json').write_text(json.dumps(dict(
+        content_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+        conversation_id='conversation', version='version', user_id='user',
+        schema_version='analyst-runtime-workspace-upload/v1', workspace_path=str(source))))
+    bad_token = '[[cite:'+'f'*24+']]'
+    class Provider(_SequenceProvider):
+        async def chat(self, messages, **kwargs):
+            self.calls.append(list(messages))
+            if len(self.calls) == 1:
+                return LLMResponse(content=None, tool_calls=[ToolCallRequest(
+                    id='read-one', name='read_file', arguments={'path':str(source)})])
+            token = re.search(r'\[\[cite:[a-f0-9]{24}\]\]', str(messages)).group()
+            if len(self.calls) == 3 and corrects_token:
+                return LLMResponse(content=('Analysis is complete. The original file supports this fact; this report distinguishes measured evidence from unverified interpretations and keeps the stated limitations. '*3)+token, finish_reason='stop')
+            return LLMResponse(content=('Analysis is complete. The original file supports this fact; this report distinguishes measured evidence from unverified interpretations and keeps the stated limitations. '*3)+bad_token, finish_reason='stop')
+    provider = Provider([])
+    agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, tool_profile='trusted-analysis')
+    agent._set_tool_context('web','chat',analysis_conversation_id='conversation')
+    session = SessionManager(tmp_path).get_or_create('web:chat')
+    result = await agent._run_agent_loop([{'role':'user','content':'Read the original'}],session=session,
+        request_uuid='request',citation_conversation_id='conversation')
+    assert len(provider.calls) == 3
+    assert bad_token not in result.content
+    assert any(e.get('reason') == 'invalid_citation' for e in session.events)
+    assert len(cited_refs(session.events,result.content)) == int(corrects_token)
+    assert ('来源不可用' in result.content) is (not corrects_token)
+
+
+@pytest.mark.asyncio
+async def test_valid_prior_answer_identity_does_not_trigger_citation_repair(tmp_path):
+    token = '[[cite:'+'a'*24+']]'
+    provider = _SequenceProvider([LLMResponse(content='This final answer refers to the retained prior answer. '*8+token, finish_reason='stop')])
+    agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, tool_profile='trusted-analysis')
+    result = await agent._run_agent_loop([{'role':'user','content':'Summarize the previous answer'}],
+        citation_conversation_id='conversation', citation_history_refs=[{'id':'a'*24,'kind':'conversation','content':'prior answer'}])
+    assert len(provider.calls) == 1 and token in result.content

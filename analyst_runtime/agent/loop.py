@@ -21,6 +21,7 @@ from analyst_runtime.agent.analysis_context import (
     AnalysisArtifactStore,
 )
 from analyst_runtime.agent.citation_refs import (
+    CITATION_TOKEN,
     annotate_history,
     citation_from_read,
     cited_refs,
@@ -1299,6 +1300,7 @@ class AgentLoop:
         execution_key: str | None = None,
         allow_tools: bool = True,
         citation_conversation_id: str | None = None,
+        citation_history_refs: list[dict[str, Any]] | None = None,
     ) -> AgentLoopResult:
         """
         Run the agent iteration loop.
@@ -1332,7 +1334,7 @@ class AgentLoop:
         _had_midtask_continuation = False  # one-shot: prevents infinite retry on text-only stops
         _delivery_recovery_attempts = 0  # bounded retries for missing final report bodies
         _citation_recovery_attempted = False
-        _issued_citation_ids: set[str] = set()
+        _issued_citation_ids: set[str] = {ref["id"] for ref in citation_history_refs or []}
         _completed_guarded_tool_calls: dict[str, str] = {}
         terminal_reason = "iteration_limit"
         terminal_error_code: str | None = None
@@ -1839,24 +1841,39 @@ class AgentLoop:
                     final_content = None
                     continue
 
-                if final_content and uncited_summary(final_content, _issued_citation_ids):
+                unknown_ids = ({m.group(1) for m in CITATION_TOKEN.finditer(final_content or "")}
+                               - _issued_citation_ids) if citation_conversation_id and self.tool_profile == "trusted-analysis" else set()
+                missing_summary = bool(final_content and uncited_summary(final_content, _issued_citation_ids))
+                if unknown_ids or missing_summary:
                     if not _citation_recovery_attempted and iteration < self.max_iterations:
                         _citation_recovery_attempted = True
                         messages = self.context.add_assistant_message(
                             messages, final_content, None, reasoning_content=response.reasoning_content
                         )
+                        issued = [e["citation_ref"] for e in (session.events if session else [])
+                                  if e.get("type") == "tool_result" and e.get("status") == "completed"
+                                  and isinstance(e.get("citation_ref"), dict)
+                                  and e["citation_ref"].get("id") in _issued_citation_ids]
+                        locations = [{k: ref[k] for k in ("id", "kind", "path", "page", "sheet", "cells") if k in ref}
+                                     for ref in issued + (citation_history_refs or [])]
                         messages.append({
                             "role": "user",
                             "content": (
-                                "请修订刚才的回答：结论或摘要中每项资料事实和数字都要在相应句旁"
-                                "使用支持该事实的已读来源引用标识；跨文件结论需引用各相关来源。"
-                                "不得猜测引用关系或编造标识；无法确定时明确说明。保留事实与建议的区分。"
+                                "请修订刚才的回答：存在未签发的来源标识或结论/摘要缺少引用。"
+                                "每项资料事实和数字在相应句旁使用支持它的已读来源标识。"
+                                "下面仅是来源定位，不证明任何结论；不得按相似标识猜测对应关系。"
+                                "无法核实时重新读取原件，或明确说明来源不可用。保留事实与建议的区分。\n"
+                                + json.dumps(locations, ensure_ascii=False)
                             ),
                         })
-                        record_retry("uncited_summary")
+                        record_retry("invalid_citation" if unknown_ids else "uncited_summary")
                         final_content = None
                         continue
-                    final_content = "摘要未附可核验引用，请以正文中标注来源的事实为准。\n\n" + final_content
+                    if unknown_ids:
+                        final_content = CITATION_TOKEN.sub(
+                            lambda m: "［来源不可用］" if m.group(1) in unknown_ids else m.group(0), final_content)
+                    if missing_summary:
+                        final_content = "摘要未附可核验引用，请以正文中标注来源的事实为准。\n\n" + final_content
 
                 logger.info(
                     "Agent loop ended at iteration {}: finish_reason={} tools_used={} "
@@ -2579,6 +2596,7 @@ class AgentLoop:
                 execution_key=msg.execution_key,
                 allow_tools=not interpretation_only,
                 citation_conversation_id=msg.conversation_id,
+                citation_history_refs=history_refs,
             )
         final_content, tools_used = loop_result
 

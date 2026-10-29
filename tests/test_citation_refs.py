@@ -87,3 +87,9 @@ def test_account_scope_allows_owned_history_but_rejects_other_owner(tmp_path):
         assert citation_from_read(json.dumps(result), tmp_path, 'new-chat', 'call') is None
     finally:
         bind_account_workspace(tmp_path, None)
+
+
+
+def test_one_sentence_summary_also_requires_a_source():
+    token = '[[cite:'+'a'*24+']]'
+    assert uncited_summary('**一句话结论**：original fact.\n\n正文 '+token, {'a'*24})

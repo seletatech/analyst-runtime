@@ -11,7 +11,7 @@ from typing import Any
 from analyst_runtime.agent.tools.account_access import account_workspace
 
 CITATION_TOKEN = re.compile(r"\[\[cite:([a-f0-9]{24})\]\]")
-SUMMARY_HEADING = re.compile(r"(?m)^\s*(?:#{1,6}\s*|\*\*)?(?:结论|摘要|总结)(?:\*\*)?\s*[：:]?\s*")
+SUMMARY_HEADING = re.compile(r"(?m)^\s*(?:#{1,6}\s*|\*\*)?(?:一句话结论|核心结论|主要结论|结论|摘要|总结)(?:\*\*)?\s*[：:]?\s*")
 
 
 def uncited_summary(answer: str, issued_ids: set[str]) -> bool:
