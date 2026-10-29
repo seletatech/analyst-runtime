@@ -124,7 +124,12 @@ async def test_original_pdf_region_is_bounded_and_preserves_source_identity(tmp_
     from analyst_runtime.agent.citation_refs import citation_from_read
     ref = citation_from_read(result, tmp_path, 'conversation', 'region-read')
     assert ref['sha256'] == identity and ref['page'] == 2 and ref['path'].endswith('/scan.pdf')
-    png = base64.b64decode(result.image_blocks[1]['image_url']['url'].split(',', 1)[1])
+    images = [block for block in result.image_blocks if block['type'] == 'image_url']
+    assert len(images) == 2, 'A crop needs the same-page overview to locate its record/header'
+    assert 'overview' in result.image_blocks[0]['text']
+    assert images[-1]['image_url']['detail'] == 'high'
+    png = base64.b64decode(images[-1]['image_url']['url'].split(',', 1)[1])
+    assert sum(len(base64.b64decode(image['image_url']['url'].split(',',1)[1])) for image in images) <= 8 * 1024 * 1024
     assert struct.unpack('>II', png[16:24]) == (2400, 1600)
     assert file.read_bytes() == original
     for invalid in [[0,0,0,1],[-.1,0,.5,.5],[.9,0,.5,.5],[True,0,.5,.5],[0,0,float('nan'),1]]:

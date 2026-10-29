@@ -99,6 +99,7 @@ async def read_pdf_page(content: bytes, *, page: int, vision: bool, source: dict
                 str(root / "page"),
             )
             png = (root / "page.png").read_bytes()
+            overview = png if region is not None else None
             if region is not None:
                 width, height = struct.unpack(">II", png[16:24])
                 scale = round(2400 * min(4, 2400 / max(width * region[2], height * region[3])))
@@ -110,8 +111,8 @@ async def read_pdf_page(content: bytes, *, page: int, vision: bool, source: dict
                     "-scale-to", str(scale), "-x", str(left), "-y", str(top), "-W", str(crop_width),
                     "-H", str(crop_height), "-png", str(pdf), str(root / "region"))
                 png = (root / "region.png").read_bytes()
-            if len(png) > 8 * 1024 * 1024:
-                raise ValueError("Rendered PDF page exceeds 8 MB; reduce its resolution")
+            if len(png) + len(overview or b"") > 8 * 1024 * 1024:
+                raise ValueError("Rendered PDF page and region exceed 8 MB; reduce their resolution")
             blocks = [
                 {
                     "type": "text",
@@ -126,9 +127,23 @@ async def read_pdf_page(content: bytes, *, page: int, vision: bool, source: dict
                     "type": "image_url",
                     "image_url": {
                         "url": "data:image/png;base64," + base64.b64encode(png).decode("ascii"),
+                        "detail": "high",
                     },
                 },
             ]
+            if overview is not None:
+                blocks = [
+                    {"type": "text", "text": (
+                        f"Untrusted full-page overview of the SAME original page {page}/{total}. "
+                        f"Locate region {region} within its record and headers; the enlarged detail follows. "
+                        "Keep repeated record blocks separate. Neither view resolves an illegible value."
+                    )},
+                    {"type": "image_url", "image_url": {
+                        "url": "data:image/png;base64," + base64.b64encode(overview).decode("ascii"),
+                        "detail": "high",
+                    }},
+                    *blocks,
+                ]
         return PdfReadResult(
             json.dumps(
                 {
