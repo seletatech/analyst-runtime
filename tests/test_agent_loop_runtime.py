@@ -2173,8 +2173,8 @@ async def test_citation_token_is_issued_by_read_and_bound_to_tool_event(tmp_path
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("corrects_summary", [True, False])
-@pytest.mark.parametrize("omit_all", [True, False])
-async def test_uncited_summary_gets_one_repair_in_same_loop(tmp_path: Path, corrects_summary: bool, omit_all: bool) -> None:
+@pytest.mark.parametrize("shape", ["summary", "whole_answer", "no_heading"])
+async def test_uncited_summary_gets_one_repair_in_same_loop(tmp_path: Path, corrects_summary: bool, shape: str) -> None:
     import re
 
     upload = tmp_path / 'uploads' / 'user' / 'conversation' / 'version'
@@ -2196,7 +2196,9 @@ async def test_uncited_summary_gets_one_repair_in_same_loop(tmp_path: Path, corr
                 )])
             token = re.search(r'\[\[cite:[a-f0-9]{24}\]\]', str(messages)).group()
             summary = f'原始事实数量 12 {token}' if corrects_summary and len(self.calls) == 3 else '原始事实数量 12'
-            body = '原始事实数量 12' if omit_all else f'原始事实数量 12 {token}'
+            body = f'原始事实数量 12 {token}' if shape == 'summary' else '原始事实数量 12'
+            if shape == 'no_heading':
+                return LLMResponse(content=f'分析已完成，{summary}', finish_reason='stop')
             return LLMResponse(content=f'## 结论\n\n{summary}\n\n## 证据\n分析已完成，{body}', finish_reason='stop')
 
     provider = Provider([])
@@ -2207,7 +2209,15 @@ async def test_uncited_summary_gets_one_repair_in_same_loop(tmp_path: Path, corr
                                          request_uuid='request', citation_conversation_id='conversation')
     assert len(provider.calls) == 3
     assert any(event.get('reason') == 'uncited_summary' for event in session.events)
-    assert ('摘要未附可核验引用' in result.content) is (not corrects_summary)
+    if corrects_summary:
+        assert result.error_code is None and result.terminal_reason == 'completed'
+        assert '[[cite:' in result.content
+    else:
+        assert result.error_code == 'ANALYST-RUNTIME-CITATION-001'
+        assert result.terminal_reason == 'citation_validation_failed'
+        assert '原始事实数量 12' not in result.content
+        assert '引用核验未通过' in result.content
+        assert not any(event.get('type') == 'final_response' and '原始事实数量 12' in event.get('content','') for event in session.events)
 
 @pytest.mark.asyncio
 async def test_active_user_scope_survives_a_lossy_context_summary(tmp_path: Path) -> None:
@@ -2292,7 +2302,12 @@ async def test_unknown_citation_gets_one_repair_without_guessing_identity(tmp_pa
     assert bad_token not in result.content
     assert any(e.get('reason') == 'invalid_citation' for e in session.events)
     assert len(cited_refs(session.events,result.content)) == int(corrects_token)
-    assert ('来源不可用' in result.content) is (not corrects_token)
+    if corrects_token:
+        assert result.error_code is None
+    else:
+        assert result.error_code == 'ANALYST-RUNTIME-CITATION-001'
+        assert result.terminal_reason == 'citation_validation_failed'
+        assert '引用核验未通过' in result.content
 
 
 @pytest.mark.asyncio
@@ -2303,3 +2318,15 @@ async def test_valid_prior_answer_identity_does_not_trigger_citation_repair(tmp_
     result = await agent._run_agent_loop([{'role':'user','content':'Summarize the previous answer'}],
         citation_conversation_id='conversation', citation_history_refs=[{'id':'a'*24,'kind':'conversation','content':'prior answer'}])
     assert len(provider.calls) == 1 and token in result.content
+
+
+@pytest.mark.asyncio
+async def test_prior_scope_confirmation_is_not_an_audited_original_read(tmp_path):
+    provider = _SequenceProvider([LLMResponse(content='Analysis is complete. The confirmed identifier is 2468. ' * 4, finish_reason='stop')])
+    agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, tool_profile='trusted-analysis')
+    result = await agent._run_agent_loop(
+        [{'role': 'user', 'content': 'Repeat the scope identifier'}], citation_conversation_id='conversation',
+        citation_history_refs=[{'id': 'a'*24, 'kind': 'conversation', 'content': 'Scope identifier 2468; awaiting confirmation'}])
+    assert len(provider.calls) == 1
+    assert result.error_code is None
+    assert result.terminal_reason == 'completed'

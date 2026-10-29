@@ -70,3 +70,13 @@ async def test_active_loop_bounds_tool_results_without_mutating_previous_prefix(
     assert len(result["content"]) < loop._INLINE_RESULT_CHARS + 300
     assert (tmp_path / "sessions/tool-results/read-1.txt").read_text() == payload
     assert calls[2][: len(calls[1])] == calls[1]
+
+
+def test_library_context_uses_the_issued_read_citation_policy(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from analyst_runtime.agent import context
+    scope = SimpleNamespace(user_id='user', private=tmp_path/'private', snapshot_run_id='run', snapshot_sha256='a'*64)
+    monkeypatch.setattr(context, 'account_workspace', lambda: scope)
+    prompt = ContextBuilder(tmp_path, minimal=True, tool_profile='trusted-analysis').build_system_prompt()
+    assert 'Use issued read citations under the workspace evidence policy.' in prompt
+    assert 'Cite the authenticated source_url' not in prompt

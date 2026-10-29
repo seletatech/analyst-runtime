@@ -100,3 +100,10 @@ def test_numeric_summary_without_any_tokens_still_requires_read_evidence():
     assert uncited_summary('**一句话结论**：当天产出 12 m，投入 15 m。\n\n正文未附任何标识。', issued)
     assert not uncited_summary('**一句话结论**：请与负责人确认。', issued)
     assert not uncited_summary('**一句话结论**：当天产出 12 m。', set())
+
+
+def test_whole_uncited_numeric_answer_needs_no_summary_heading():
+    issued = {'a' * 24}
+    assert uncited_summary('当天产出 12 m，投入 15 m。', issued)
+    assert uncited_summary('| 产品 | 数量 |\n|A|12|', issued)
+    assert not uncited_summary('1. 请核对标准。\n2. 联系负责人。', issued)

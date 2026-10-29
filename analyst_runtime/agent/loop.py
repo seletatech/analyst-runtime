@@ -117,6 +117,7 @@ class AgentLoop:
     MODEL_PROFILE_ERROR_CODE = "ANALYST-RUNTIME-MODEL-001"
     MODEL_CREDENTIAL_ERROR_CODE = "ANALYST-RUNTIME-CREDENTIAL-001"
     PROVIDER_ERROR_CODE = "ANALYST-RUNTIME-PROVIDER-001"
+    CITATION_ERROR_CODE = "ANALYST-RUNTIME-CITATION-001"
 
     @classmethod
     def _support_error_message(cls, error_code: str) -> str:
@@ -1334,6 +1335,7 @@ class AgentLoop:
         _had_midtask_continuation = False  # one-shot: prevents infinite retry on text-only stops
         _delivery_recovery_attempts = 0  # bounded retries for missing final report bodies
         _citation_recovery_attempted = False
+        _audited_citation_read = False
         _issued_citation_ids: set[str] = {ref["id"] for ref in citation_history_refs or []}
         _completed_guarded_tool_calls: dict[str, str] = {}
         terminal_reason = "iteration_limit"
@@ -1536,6 +1538,7 @@ class AgentLoop:
                             result, self.workspace, citation_conversation_id, tool_call.id
                         )
                         if citation_ref:
+                            _audited_citation_read = True
                             _issued_citation_ids.add(citation_ref["id"])
                             context_result += f"\nCitation token for this read: [[cite:{citation_ref['id']}]]"
                     messages = self.context.add_tool_result(
@@ -1843,7 +1846,7 @@ class AgentLoop:
 
                 unknown_ids = ({m.group(1) for m in CITATION_TOKEN.finditer(final_content or "")}
                                - _issued_citation_ids) if citation_conversation_id and self.tool_profile == "trusted-analysis" else set()
-                missing_summary = bool(final_content and uncited_summary(final_content, _issued_citation_ids))
+                missing_summary = bool(final_content and uncited_summary(final_content, _issued_citation_ids, require_numeric=_audited_citation_read))
                 if unknown_ids or missing_summary:
                     if not _citation_recovery_attempted and iteration < self.max_iterations:
                         _citation_recovery_attempted = True
@@ -1869,11 +1872,9 @@ class AgentLoop:
                         record_retry("invalid_citation" if unknown_ids else "uncited_summary")
                         final_content = None
                         continue
-                    if unknown_ids:
-                        final_content = CITATION_TOKEN.sub(
-                            lambda m: "［来源不可用］" if m.group(1) in unknown_ids else m.group(0), final_content)
-                    if missing_summary:
-                        final_content = "摘要未附可核验引用，请以正文中标注来源的事实为准。\n\n" + final_content
+                    terminal_error_code = self.CITATION_ERROR_CODE
+                    terminal_reason = "citation_validation_failed"
+                    final_content = "本次回答的资料引用核验未通过，未生成可核验的分析结论。请重试。"
 
                 logger.info(
                     "Agent loop ended at iteration {}: finish_reason={} tools_used={} "
@@ -1884,7 +1885,8 @@ class AgentLoop:
                     bool(final_content),
                     active_model,
                 )
-                terminal_reason = "completed"
+                if terminal_error_code is None:
+                    terminal_reason = "completed"
                 # Emit final_response event
                 if session and request_uuid:
                     session.add_event(
@@ -1903,7 +1905,8 @@ class AgentLoop:
                         }
                     )
                 if (
-                    self.enable_memory_consolidation
+                    not terminal_error_code
+                    and self.enable_memory_consolidation
                     and session
                     and len(session.get_consolidation_events()) > self.memory_window
                 ):
