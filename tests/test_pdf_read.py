@@ -96,3 +96,39 @@ async def test_pdf_upload_authorization_and_checksum_precede_render(tmp_path, mo
     link = file.parent / "link.pdf"
     link.symlink_to(file)
     assert json.loads(await tool.execute(str(link)))["status"] == "denied"
+
+
+@pytest.mark.asyncio
+async def test_original_pdf_region_is_bounded_and_preserves_source_identity(tmp_path, monkeypatch):
+    import base64
+    import struct
+    monkeypatch.setenv("ANALYST_RUNTIME_UPLOAD_MANIFEST_SCHEMA", "linghui-workspace-upload/v1")
+    file = tmp_path / 'uploads/user/conversation/version/scan.pdf'
+    file.parent.mkdir(parents=True)
+    original = pdf_bytes()
+    file.write_bytes(original)
+    identity = hashlib.sha256(original).hexdigest()
+    (file.parent / '.manifest.json').write_text(json.dumps(dict(
+        schema_version='linghui-workspace-upload/v1', user_id='user',
+        conversation_id='conversation', version='version', workspace_path=str(file), content_sha256=identity)))
+    tool = ReadFileTool(allowed_dir=tmp_path, audit_results=True)
+    tool.set_conversation_context('conversation')
+    tool.set_vision_context(True)
+    region = [0.1, 0.2, 0.25, 0.25]
+    result = await tool.execute(str(file), page=2, region=region)
+    assert isinstance(result, PdfReadResult)
+    payload = json.loads(result)
+    assert payload['visual_region'] == region
+    assert payload['path'] == str(file) and payload['content_sha256'] == identity
+    assert payload['page'] == 2 and '99.25' in payload['content']
+    from analyst_runtime.agent.citation_refs import citation_from_read
+    ref = citation_from_read(result, tmp_path, 'conversation', 'region-read')
+    assert ref['sha256'] == identity and ref['page'] == 2 and ref['path'].endswith('/scan.pdf')
+    png = base64.b64decode(result.image_blocks[1]['image_url']['url'].split(',', 1)[1])
+    assert struct.unpack('>II', png[16:24]) == (2400, 1600)
+    assert file.read_bytes() == original
+    for invalid in [[0,0,0,1],[-.1,0,.5,.5],[.9,0,.5,.5],[True,0,.5,.5],[0,0,float('nan'),1]]:
+        failed = json.loads(await tool.execute(str(file), region=invalid))
+        assert failed['status'] == 'error'
+    tool.set_vision_context(False)
+    assert json.loads(await tool.execute(str(file), region=region))['status'] == 'error'

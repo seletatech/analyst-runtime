@@ -179,7 +179,7 @@ def read_text(content: bytes, *, page: int, source: dict):
 
 
 async def read_document(
-    content: bytes, *, suffix: str, page: int, member: str | None, vision: bool, source: dict
+    content: bytes, *, suffix: str, page: int, member: str | None, vision: bool, source: dict, region: list[float] | None = None
 ):
     if not content or len(content) > MAX_BYTES:
         raise ValueError("Document exceeds 100 MB or is empty")
@@ -187,6 +187,8 @@ async def read_document(
         with_archive, entries = archive_entries(content)
         with with_archive as archive:
             if member is None:
+                if region is not None:
+                    raise ValueError("Select an archive document member before requesting a visual region")
                 return json.dumps(
                     {
                         **source,
@@ -221,26 +223,30 @@ async def read_document(
         }
         if child_suffix in DOCUMENT_SUFFIXES | {".pdf"}:
             return await read_document(
-                data, suffix=child_suffix, page=page, member=None, vision=vision, source=child
+                data, suffix=child_suffix, page=page, member=None, vision=vision, source=child, region=region
             )
         if child_suffix not in {".png", ".jpg", ".jpeg"}:
+            if region is not None:
+                raise ValueError("Visual regions require PDF or converted document pages")
             return read_text(data, page=page, source=child)
         # Images use the same page-image pipeline as PDFs; no separate vision tool/loop.
         if child_suffix in {".png", ".jpg", ".jpeg"}:
             return await read_pdf_page(
-                await office_pdf(data, child_suffix), page=page, vision=vision, source=child
+                await office_pdf(data, child_suffix), page=page, vision=vision, source=child, region=region
             )
         raise ValueError("This archive member format is not supported")
     if member is not None:
         raise ValueError("member is only valid for ZIP files")
     if suffix == ".pdf":
-        return await read_pdf_page(content, page=page, vision=vision, source=source)
+        return await read_pdf_page(content, page=page, vision=vision, source=source, region=region)
     if suffix in OFFICE_SUFFIXES | {".html", ".htm", ".png", ".jpg", ".jpeg"}:
         if suffix in {".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp"}:
             # Validate compressed input before handing it to the converter.
             archive, _ = archive_entries(content)
             archive.close()
         if suffix in {".html", ".htm"}:
+            if region is not None:
+                raise ValueError("Visual regions are unavailable for inert HTML text")
             # Read HTML as inert text; never run scripts, fetch URLs or load local resources.
             from html.parser import HTMLParser
 
@@ -297,5 +303,6 @@ async def read_document(
             page=page,
             vision=vision,
             source={**source, "original_format": suffix, "pagination": "converted_document_pages"},
+            region=region,
         )
     raise ValueError("Unsupported document format")

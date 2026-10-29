@@ -6,6 +6,7 @@ import json
 import os
 import re
 import uuid
+from collections.abc import Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,7 @@ from analyst_runtime.agent.analysis_context import (
     AnalysisArtifactStore,
 )
 from analyst_runtime.agent.citation_refs import (
+    CITATION_TOKEN,
     annotate_history,
     citation_from_read,
     cited_refs,
@@ -115,6 +117,7 @@ class AgentLoop:
     MODEL_PROFILE_ERROR_CODE = "ANALYST-RUNTIME-MODEL-001"
     MODEL_CREDENTIAL_ERROR_CODE = "ANALYST-RUNTIME-CREDENTIAL-001"
     PROVIDER_ERROR_CODE = "ANALYST-RUNTIME-PROVIDER-001"
+    CITATION_ERROR_CODE = "ANALYST-RUNTIME-CITATION-001"
 
     @classmethod
     def _support_error_message(cls, error_code: str) -> str:
@@ -1298,6 +1301,7 @@ class AgentLoop:
         execution_key: str | None = None,
         allow_tools: bool = True,
         citation_conversation_id: str | None = None,
+        citation_history_refs: list[dict[str, Any]] | None = None,
     ) -> AgentLoopResult:
         """
         Run the agent iteration loop.
@@ -1317,6 +1321,10 @@ class AgentLoop:
         if isinstance(read_tool, ReadFileTool):
             read_tool.set_vision_context(model_supports_vision(active_model))
         messages = initial_messages
+        # Real request/steering inputs must survive a lossy summary; tool and retry messages are not authority.
+        request_messages = [
+            message for message in initial_messages if message.get("role") == "user"
+        ][-1:]
         iteration = 0
         final_content = None
         tools_used: list[str] = []
@@ -1327,7 +1335,8 @@ class AgentLoop:
         _had_midtask_continuation = False  # one-shot: prevents infinite retry on text-only stops
         _delivery_recovery_attempts = 0  # bounded retries for missing final report bodies
         _citation_recovery_attempted = False
-        _issued_citation_ids: set[str] = set()
+        _audited_citation_read = False
+        _issued_citation_ids: set[str] = {ref["id"] for ref in citation_history_refs or []}
         _completed_guarded_tool_calls: dict[str, str] = {}
         terminal_reason = "iteration_limit"
         terminal_error_code: str | None = None
@@ -1529,6 +1538,7 @@ class AgentLoop:
                             result, self.workspace, citation_conversation_id, tool_call.id
                         )
                         if citation_ref:
+                            _audited_citation_read = True
                             _issued_citation_ids.add(citation_ref["id"])
                             context_result += f"\nCitation token for this read: [[cite:{citation_ref['id']}]]"
                     messages = self.context.add_tool_result(
@@ -1582,6 +1592,7 @@ class AgentLoop:
                 # or persistent session events; later turns can reread the audited PDF.
                 if pdf_images:
                     messages.append({"role": "user", "content": pdf_images})
+                before_steer = messages[-1] if messages else None
                 steered_messages = await self.steering.apply_pending(
                     execution_key,
                     messages,
@@ -1589,6 +1600,11 @@ class AgentLoop:
                     parent_uuid=parent_uuid,
                 )
                 if steered_messages:
+                    if (
+                        steered_messages[-1] is not before_steer
+                        and steered_messages[-1].get("role") == "user"
+                    ):
+                        request_messages.append(steered_messages[-1])
                     messages = steered_messages
                     final_content = None
                     continue
@@ -1639,6 +1655,7 @@ class AgentLoop:
                     response.usage,
                     model=active_model,
                     telemetry=model_telemetry,
+                    request_messages=request_messages,
                 )
                 if messages is not messages_before_compaction and session and request_uuid:
                     session.add_event(
@@ -1686,6 +1703,7 @@ class AgentLoop:
                     response.usage,
                     model=active_model,
                     telemetry=model_telemetry,
+                    request_messages=request_messages,
                 )
                 if messages is not messages_before_compaction and session and request_uuid:
                     session.add_event(
@@ -1808,6 +1826,7 @@ class AgentLoop:
                     record_retry("text_only_midtask")
                     continue
 
+                before_steer = messages[-1] if messages else None
                 steered_messages = await self.steering.apply_pending(
                     execution_key,
                     messages,
@@ -1816,28 +1835,46 @@ class AgentLoop:
                     preceding_assistant=response.content,
                 )
                 if steered_messages:
+                    if (
+                        steered_messages[-1] is not before_steer
+                        and steered_messages[-1].get("role") == "user"
+                    ):
+                        request_messages.append(steered_messages[-1])
                     messages = steered_messages
                     final_content = None
                     continue
 
-                if final_content and uncited_summary(final_content, _issued_citation_ids):
+                unknown_ids = ({m.group(1) for m in CITATION_TOKEN.finditer(final_content or "")}
+                               - _issued_citation_ids) if citation_conversation_id and self.tool_profile == "trusted-analysis" else set()
+                missing_summary = bool(final_content and uncited_summary(final_content, _issued_citation_ids, require_read=_audited_citation_read))
+                if unknown_ids or missing_summary:
                     if not _citation_recovery_attempted and iteration < self.max_iterations:
                         _citation_recovery_attempted = True
                         messages = self.context.add_assistant_message(
                             messages, final_content, None, reasoning_content=response.reasoning_content
                         )
+                        issued = [e["citation_ref"] for e in (session.events if session else [])
+                                  if e.get("type") == "tool_result" and e.get("status") == "completed"
+                                  and isinstance(e.get("citation_ref"), dict)
+                                  and e["citation_ref"].get("id") in _issued_citation_ids]
+                        locations = [{k: ref[k] for k in ("id", "kind", "path", "page", "sheet", "cells") if k in ref}
+                                     for ref in issued + (citation_history_refs or [])]
                         messages.append({
                             "role": "user",
                             "content": (
-                                "请修订刚才的回答：结论或摘要中每项资料事实和数字都要在相应句旁"
-                                "使用支持该事实的已读来源引用标识；跨文件结论需引用各相关来源。"
-                                "不得猜测引用关系或编造标识；无法确定时明确说明。保留事实与建议的区分。"
+                                "请修订刚才的回答：存在未签发的来源标识或结论/摘要缺少引用。"
+                                "每项资料事实和数字在相应句旁使用支持它的已读来源标识。"
+                                "下面仅是来源定位，不证明任何结论；不得按相似标识猜测对应关系。"
+                                "无法核实时重新读取原件，或明确说明来源不可用。保留事实与建议的区分。\n"
+                                + json.dumps(locations, ensure_ascii=False)
                             ),
                         })
-                        record_retry("uncited_summary")
+                        record_retry("invalid_citation" if unknown_ids else "uncited_summary")
                         final_content = None
                         continue
-                    final_content = "摘要未附可核验引用，请以正文中标注来源的事实为准。\n\n" + final_content
+                    terminal_error_code = self.CITATION_ERROR_CODE
+                    terminal_reason = "citation_validation_failed"
+                    final_content = "本次回答的资料引用核验未通过，未生成可核验的分析结论。请重试。"
 
                 logger.info(
                     "Agent loop ended at iteration {}: finish_reason={} tools_used={} "
@@ -1848,7 +1885,8 @@ class AgentLoop:
                     bool(final_content),
                     active_model,
                 )
-                terminal_reason = "completed"
+                if terminal_error_code is None:
+                    terminal_reason = "completed"
                 # Emit final_response event
                 if session and request_uuid:
                     session.add_event(
@@ -1867,7 +1905,8 @@ class AgentLoop:
                         }
                     )
                 if (
-                    self.enable_memory_consolidation
+                    not terminal_error_code
+                    and self.enable_memory_consolidation
                     and session
                     and len(session.get_consolidation_events()) > self.memory_window
                 ):
@@ -1899,6 +1938,7 @@ class AgentLoop:
         *,
         model: str,
         telemetry: RunModelTelemetry | None = None,
+        request_messages: Sequence[dict[str, Any]] = (),
     ) -> list[dict[str, Any]]:
         """Replace old model context with a summary after the token threshold."""
         prompt_tokens = int(
@@ -1914,6 +1954,7 @@ class AgentLoop:
             messages,
             model=model,
             telemetry=telemetry,
+            request_messages=request_messages,
         )
         if compacted is messages:
             return messages
@@ -1931,6 +1972,7 @@ class AgentLoop:
         *,
         model: str,
         telemetry: RunModelTelemetry | None = None,
+        request_messages: Sequence[dict[str, Any]] = (),
     ) -> list[dict[str, Any]]:
         """Summarize older messages while preserving system rules and recent work."""
         leading_system_count = 0
@@ -2004,6 +2046,10 @@ class AgentLoop:
                 "role": "assistant",
                 "content": "Understood. I will continue from this compacted context.",
             },
+            *[
+                message for message in request_messages
+                if any(message is old for old in old_messages)
+            ],
             *messages[cut_at:],
         ]
 
@@ -2553,6 +2599,7 @@ class AgentLoop:
                 execution_key=msg.execution_key,
                 allow_tools=not interpretation_only,
                 citation_conversation_id=msg.conversation_id,
+                citation_history_refs=history_refs,
             )
         final_content, tools_used = loop_result
 

@@ -1929,6 +1929,8 @@ async def test_active_context_is_compacted_after_token_threshold(
         [
             {"role": "system", "content": "system rules"},
             {"role": "user", "content": "OLD RAW CONTEXT"},
+            {"role": "assistant", "content": "historical response"},
+            {"role": "user", "content": "CURRENT REQUEST"},
         ]
     )
 
@@ -1941,6 +1943,7 @@ async def test_active_context_is_compacted_after_token_threshold(
     rendered = str(final_request)
     assert "preserved facts and unfinished work" in rendered
     assert "OLD RAW CONTEXT" not in rendered
+    assert "CURRENT REQUEST" in rendered
     assert final_request[0] == {"role": "system", "content": "system rules"}
 
 
@@ -2170,7 +2173,8 @@ async def test_citation_token_is_issued_by_read_and_bound_to_tool_event(tmp_path
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("corrects_summary", [True, False])
-async def test_uncited_summary_gets_one_repair_in_same_loop(tmp_path: Path, corrects_summary: bool) -> None:
+@pytest.mark.parametrize("shape", ["summary", "whole_answer", "no_heading", "no_numbers"])
+async def test_uncited_summary_gets_one_repair_in_same_loop(tmp_path: Path, corrects_summary: bool, shape: str) -> None:
     import re
 
     upload = tmp_path / 'uploads' / 'user' / 'conversation' / 'version'
@@ -2191,8 +2195,14 @@ async def test_uncited_summary_gets_one_repair_in_same_loop(tmp_path: Path, corr
                     id='read-one', name='read_file', arguments={'path': str(source)}
                 )])
             token = re.search(r'\[\[cite:[a-f0-9]{24}\]\]', str(messages)).group()
-            summary = f'原始事实 {token}' if corrects_summary and len(self.calls) == 3 else '原始事实'
-            return LLMResponse(content=f'## 结论\n\n{summary}\n\n## 证据\n分析已完成，原始事实 {token}', finish_reason='stop')
+            summary = f'原始事实数量 12 {token}' if corrects_summary and len(self.calls) == 3 else '原始事实数量 12'
+            body = f'原始事实数量 12 {token}' if shape == 'summary' else '原始事实数量 12'
+            if shape == 'no_numbers':
+                text = '分析已完成，原始事实已核对。' + (token if corrects_summary and len(self.calls) == 3 else '')
+                return LLMResponse(content=text, finish_reason='stop')
+            if shape == 'no_heading':
+                return LLMResponse(content=f'分析已完成，{summary}', finish_reason='stop')
+            return LLMResponse(content=f'## 结论\n\n{summary}\n\n## 证据\n分析已完成，{body}', finish_reason='stop')
 
     provider = Provider([])
     agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, tool_profile='trusted-analysis')
@@ -2202,4 +2212,134 @@ async def test_uncited_summary_gets_one_repair_in_same_loop(tmp_path: Path, corr
                                          request_uuid='request', citation_conversation_id='conversation')
     assert len(provider.calls) == 3
     assert any(event.get('reason') == 'uncited_summary' for event in session.events)
-    assert ('摘要未附可核验引用' in result.content) is (not corrects_summary)
+    if corrects_summary:
+        assert result.error_code is None and result.terminal_reason == 'completed'
+        assert '[[cite:' in result.content
+    else:
+        assert result.error_code == 'ANALYST-RUNTIME-CITATION-001'
+        assert result.terminal_reason == 'citation_validation_failed'
+        assert '原始事实数量 12' not in result.content
+        assert '原始事实已核对' not in result.content
+        assert '引用核验未通过' in result.content
+        assert not any(event.get('type') == 'final_response' and '原始事实数量 12' in event.get('content','') for event in session.events)
+
+@pytest.mark.asyncio
+async def test_active_user_scope_survives_a_lossy_context_summary(tmp_path: Path) -> None:
+    goal = "Summarize only these five rolls for the confirmed reporting day; keep production separate from receipts."
+    provider = _SequenceProvider([
+        LLMResponse(content="unfinished evidence review", finish_reason="length", usage={"prompt_tokens": 11}),
+        LLMResponse(content="Earlier evidence concerned a different purchase order.", finish_reason="stop"),
+        LLMResponse(content="final report", finish_reason="stop"),
+    ])
+    agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path,
+                      context_compact_threshold=10, context_compact_keep_messages=1)
+    await agent._run_agent_loop([
+        {"role":"system","content":"Follow the user's current scope."},
+        {"role":"user","content":"historical unrelated request"},
+        {"role":"assistant","content":"historical evidence"},
+        {"role":"user","content":goal},
+    ])
+    assert any(message.get("role")=="user" and message.get("content")==goal
+               for message in provider.calls[-1]), "Lossy compaction removed the actual active user scope"
+
+
+@pytest.mark.asyncio
+async def test_applied_steer_and_request_survive_later_lossy_compaction(tmp_path: Path) -> None:
+    provider = _SequenceProvider([
+        LLMResponse(content="reading evidence", tool_calls=[ToolCallRequest(id="call-goal", name="exec", arguments={"command":"read evidence"})]),
+        LLMResponse(content="partial", finish_reason="length", usage={"prompt_tokens":11}),
+        LLMResponse(content="Summary omits every user constraint.", finish_reason="stop"),
+        LLMResponse(content="Final response has no actions remaining. " * 20, finish_reason="stop"),
+    ])
+    bus = MessageBus()
+    agent = AgentLoop(bus=bus, provider=provider, workspace=tmp_path,
+                      context_compact_threshold=10, context_compact_keep_messages=1)
+    agent.tools.register(_StaticAnalysisExec({"value":1}))
+    execution_key="web:run-goal"
+    session=agent.sessions.get_or_create("web:conversation-goal")
+    steer=InboundMessage(channel="web", sender_id="user", chat_id="run-goal",
+        content="Only the confirmed reporting day; exclude receipt dates.", run_id="run-goal",
+        conversation_id="conversation-goal", metadata={"control":"steer","steer_id":"scope-goal"})
+    await agent.steering.handle_control(steer, run_active=True)
+    result=await agent._run_agent_loop([{"role":"user","content":"Keep all five rolls in scope."}],
+                                     execution_key=execution_key, session=session)
+    assert result.content==("Final response has no actions remaining. " * 20).strip()
+    users=[message["content"] for message in provider.calls[-1] if message.get("role")=="user"]
+    assert "Keep all five rolls in scope." in users
+    assert any(steer.content in content for content in users)
+    assert sum("Keep all five rolls in scope."==content for content in users)==1
+    assert (await bus.consume_outbound()).metadata["control"]=="steer_applied"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('corrects_token', [True, False])
+async def test_unknown_citation_gets_one_repair_without_guessing_identity(tmp_path, corrects_token):
+    import re
+
+    from analyst_runtime.agent.citation_refs import cited_refs
+    upload = tmp_path / 'uploads/user/conversation/version'
+    upload.mkdir(parents=True)
+    source = upload / 'record.txt'
+    source.write_text('original fact')
+    (upload / '.manifest.json').write_text(json.dumps(dict(
+        content_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+        conversation_id='conversation', version='version', user_id='user',
+        schema_version='analyst-runtime-workspace-upload/v1', workspace_path=str(source))))
+    bad_token = '[[cite:'+'f'*24+']]'
+    class Provider(_SequenceProvider):
+        async def chat(self, messages, **kwargs):
+            self.calls.append(list(messages))
+            if len(self.calls) == 1:
+                return LLMResponse(content=None, tool_calls=[ToolCallRequest(
+                    id='read-one', name='read_file', arguments={'path':str(source)})])
+            token = re.search(r'\[\[cite:[a-f0-9]{24}\]\]', str(messages)).group()
+            if len(self.calls) == 3 and corrects_token:
+                return LLMResponse(content=('Analysis is complete. The original file supports this fact; this report distinguishes measured evidence from unverified interpretations and keeps the stated limitations. '*3)+token, finish_reason='stop')
+            return LLMResponse(content=('Analysis is complete. The original file supports this fact; this report distinguishes measured evidence from unverified interpretations and keeps the stated limitations. '*3)+bad_token, finish_reason='stop')
+    provider = Provider([])
+    agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, tool_profile='trusted-analysis')
+    agent._set_tool_context('web','chat',analysis_conversation_id='conversation')
+    session = SessionManager(tmp_path).get_or_create('web:chat')
+    result = await agent._run_agent_loop([{'role':'user','content':'Read the original'}],session=session,
+        request_uuid='request',citation_conversation_id='conversation')
+    assert len(provider.calls) == 3
+    assert bad_token not in result.content
+    assert any(e.get('reason') == 'invalid_citation' for e in session.events)
+    assert len(cited_refs(session.events,result.content)) == int(corrects_token)
+    if corrects_token:
+        assert result.error_code is None
+    else:
+        assert result.error_code == 'ANALYST-RUNTIME-CITATION-001'
+        assert result.terminal_reason == 'citation_validation_failed'
+        assert '引用核验未通过' in result.content
+
+
+@pytest.mark.asyncio
+async def test_valid_prior_answer_identity_does_not_trigger_citation_repair(tmp_path):
+    token = '[[cite:'+'a'*24+']]'
+    provider = _SequenceProvider([LLMResponse(content='This final answer refers to the retained prior answer. '*8+token, finish_reason='stop')])
+    agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, tool_profile='trusted-analysis')
+    result = await agent._run_agent_loop([{'role':'user','content':'Summarize the previous answer'}],
+        citation_conversation_id='conversation', citation_history_refs=[{'id':'a'*24,'kind':'conversation','content':'prior answer'}])
+    assert len(provider.calls) == 1 and token in result.content
+
+
+@pytest.mark.asyncio
+async def test_prior_scope_confirmation_is_not_an_audited_original_read(tmp_path):
+    provider = _SequenceProvider([LLMResponse(content='Analysis is complete. The confirmed identifier is 2468. ' * 4, finish_reason='stop')])
+    agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, tool_profile='trusted-analysis')
+    result = await agent._run_agent_loop(
+        [{'role': 'user', 'content': 'Repeat the scope identifier'}], citation_conversation_id='conversation',
+        citation_history_refs=[{'id': 'a'*24, 'kind': 'conversation', 'content': 'Scope identifier 2468; awaiting confirmation'}])
+    assert len(provider.calls) == 1
+    assert result.error_code is None
+    assert result.terminal_reason == 'completed'
+
+
+@pytest.mark.asyncio
+async def test_source_free_advice_needs_no_fabricated_citation(tmp_path):
+    provider = _SequenceProvider([LLMResponse(content='分析已完成，建议联系负责人核对范围。', finish_reason='stop')])
+    agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, tool_profile='trusted-analysis')
+    result = await agent._run_agent_loop([{'role':'user','content':'给一个不需要资料的建议'}], citation_conversation_id='conversation')
+    assert len(provider.calls) == 1 and result.error_code is None
+    assert '[[cite:' not in result.content

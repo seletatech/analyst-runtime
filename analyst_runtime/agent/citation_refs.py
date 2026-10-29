@@ -11,16 +11,19 @@ from typing import Any
 from analyst_runtime.agent.tools.account_access import account_workspace
 
 CITATION_TOKEN = re.compile(r"\[\[cite:([a-f0-9]{24})\]\]")
-SUMMARY_HEADING = re.compile(r"(?m)^\s*(?:#{1,6}\s*|\*\*)?(?:结论|摘要|总结)(?:\*\*)?\s*[：:]?\s*")
+SUMMARY_HEADING = re.compile(r"(?m)^\s*(?:#{1,6}\s*|\*\*)?(?:一句话结论|核心结论|主要结论|结论|摘要|总结)(?:\*\*)?\s*[：:]?\s*")
 
 
-def uncited_summary(answer: str, issued_ids: set[str]) -> bool:
-    """Detect an identifiable summary lacking a reference when cited evidence exists.
+def uncited_summary(answer: str, issued_ids: set[str], *, require_read: bool = True) -> bool:
+    """Detect absent read citations or an uncited summary after evidence reads.
 
     This is a narrow presentation check, not a claim-to-evidence verifier.
     """
-    if not any(match.group(1) in issued_ids for match in CITATION_TOKEN.finditer(answer)):
+    if not issued_ids:
         return False
+    has_citation = any(match.group(1) in issued_ids for match in CITATION_TOKEN.finditer(answer))
+    if not has_citation:
+        return require_read and bool(answer.strip())
     heading = SUMMARY_HEADING.search(answer)
     if not heading:
         return False

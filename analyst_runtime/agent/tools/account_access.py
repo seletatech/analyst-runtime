@@ -60,7 +60,8 @@ class AccountWorkspace:
         if len(entries) != 1:
             return None
         entry = entries[0]
-        str(UUID(entry["file_id"])); str(UUID(entry["version_id"]))
+        str(UUID(entry["file_id"]))
+        str(UUID(entry["version_id"]))
         return entry
 
     @property

@@ -173,7 +173,7 @@ class ReadFileTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Read text files or one PDF page (text and, for vision models, its image). ZIP: omit member to list entries, then pass member=exact_name. Office/HTML/PDF page defaults to 1; use page=N to read all required pages. For uploaded Excel files, sheet and cells read a bounded exact range. PDFs are limited to 100 MB and 200 pages."
+        return "Read text files or one PDF page (text and, for vision models, its image). ZIP: omit member to list entries, then pass member=exact_name. Office/HTML/PDF page defaults to 1; use page=N to read all required pages. For uploaded Excel files, sheet and cells read a bounded exact range. Use region=[left,top,width,height] in 0..1 for a bounded visual zoom of the original page. Text remains full-page; inspect the full page first. PDFs are limited to 100 MB and 200 pages."
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -187,6 +187,7 @@ class ReadFileTool(Tool):
                 "path": {"type": "string", "description": "The file path to read"},
                 "sheet": {"type": "string", "description": "Excel worksheet name for a bounded cell read"},
                 "cells": {"type": "string", "description": "Single Excel row such as A2:F2, at most 500 cells"},
+                "region": {"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 1}, "minItems": 4, "maxItems": 4, "description": "Visual zoom [left,top,width,height] in normalized page coordinates; width/height >= .05. PDF or converted Office pages only; source/page identity unchanged."},
                 "page": {
                     "type": "integer",
                     "minimum": 1,
@@ -198,7 +199,7 @@ class ReadFileTool(Tool):
 
     async def execute(
         self, path: str, page: int = 1, member: str | None = None,
-        sheet: str | None = None, cells: str | None = None, **kwargs: Any
+        sheet: str | None = None, cells: str | None = None, region: list[float] | None = None, **kwargs: Any
     ) -> str:
         read_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         try:
@@ -222,6 +223,8 @@ class ReadFileTool(Tool):
                 )
 
             is_document = file_path.suffix.lower() in DOCUMENT_SUFFIXES | {".pdf"}
+            if region is not None and (not is_document or sheet is not None or cells is not None):
+                raise ValueError("Visual regions require PDF or converted document pages")
             if is_document and file_path.stat().st_size > 100 * 1024 * 1024:
                 raise ValueError("Document exceeds 100 MB")
             content_bytes = _read_bytes(file_path)
@@ -253,6 +256,7 @@ class ReadFileTool(Tool):
                     member=member,
                     vision=self._vision.get(),
                     source=source,
+                    region=region,
                 )
             if audit_upload:
                 source = json.loads(
