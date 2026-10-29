@@ -1,8 +1,8 @@
+import errno
 import hashlib
 import json
 import shlex
 import sys
-import errno
 from pathlib import Path
 from uuid import uuid4
 
@@ -143,7 +143,8 @@ async def test_citation_is_bound_to_library_version_and_actual_original_hash(tmp
         result = await tool.execute("data/original.txt")
         ref = citation_from_read(result, tmp_path, "chat", "call")
         assert ref and (ref["kind"], ref["file_id"], ref["version_id"], ref["sha256"]) == ("library", file_id, version, digest)
-        forged = json.loads(result); forged["library_version_id"] = str(uuid4())
+        forged = json.loads(result)
+        forged["library_version_id"] = str(uuid4())
         assert citation_from_read(json.dumps(forged), tmp_path, "chat", "call") is None
         (root / "original.txt").write_text("changed original")
         assert json.loads(await tool.execute("data/original.txt"))["status"] == "integrity_error"

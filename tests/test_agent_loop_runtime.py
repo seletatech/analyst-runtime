@@ -2259,6 +2259,7 @@ async def test_applied_steer_and_request_survive_later_lossy_compaction(tmp_path
 @pytest.mark.parametrize('corrects_token', [True, False])
 async def test_unknown_citation_gets_one_repair_without_guessing_identity(tmp_path, corrects_token):
     import re
+
     from analyst_runtime.agent.citation_refs import cited_refs
     upload = tmp_path / 'uploads/user/conversation/version'
     upload.mkdir(parents=True)

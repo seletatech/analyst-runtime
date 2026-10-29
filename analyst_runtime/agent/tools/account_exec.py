@@ -1,7 +1,7 @@
 """Fail-closed Linux child-process boundary for account-scoped exec."""
 
-import os
 import json
+import os
 import runpy
 import sys
 from pathlib import Path
