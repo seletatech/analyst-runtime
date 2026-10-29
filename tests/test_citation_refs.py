@@ -9,7 +9,7 @@ def test_summary_guard_requires_an_issued_citation_in_the_summary():
     issued = {'a' * 24}
     assert uncited_summary(f"## 结论\n\n客户待验证。\n\n## 事实\n客户待验证 {token}", issued)
     assert not uncited_summary(f"**结论**：客户待验证 {token}\n\n## 事实\n客户待验证 {token}", issued)
-    assert not uncited_summary("## 结论\n\n纯建议。", issued)
+    assert not uncited_summary("## 结论\n\n纯建议。", issued, require_read=False)
     assert not uncited_summary(f"## 事实\n客户待验证 {token}", issued)
     assert not uncited_summary(f"## 结论\n\n客户待验证。\n\n## 事实\n{token}", set())
 
@@ -98,7 +98,7 @@ def test_one_sentence_summary_also_requires_a_source():
 def test_numeric_summary_without_any_tokens_still_requires_read_evidence():
     issued = {'a' * 24}
     assert uncited_summary('**一句话结论**：当天产出 12 m，投入 15 m。\n\n正文未附任何标识。', issued)
-    assert not uncited_summary('**一句话结论**：请与负责人确认。', issued)
+    assert not uncited_summary('**一句话结论**：请与负责人确认。', issued, require_read=False)
     assert not uncited_summary('**一句话结论**：当天产出 12 m。', set())
 
 
@@ -106,4 +106,8 @@ def test_whole_uncited_numeric_answer_needs_no_summary_heading():
     issued = {'a' * 24}
     assert uncited_summary('当天产出 12 m，投入 15 m。', issued)
     assert uncited_summary('| 产品 | 数量 |\n|A|12|', issued)
-    assert not uncited_summary('1. 请核对标准。\n2. 联系负责人。', issued)
+    assert not uncited_summary('1. 请核对标准。\n2. 联系负责人。', issued, require_read=False)
+
+
+def test_non_numeric_source_answer_cannot_omit_every_read_reference():
+    assert uncited_summary('原件记录为待复核。', {'a'*24})

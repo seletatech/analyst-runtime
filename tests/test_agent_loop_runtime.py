@@ -2173,7 +2173,7 @@ async def test_citation_token_is_issued_by_read_and_bound_to_tool_event(tmp_path
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("corrects_summary", [True, False])
-@pytest.mark.parametrize("shape", ["summary", "whole_answer", "no_heading"])
+@pytest.mark.parametrize("shape", ["summary", "whole_answer", "no_heading", "no_numbers"])
 async def test_uncited_summary_gets_one_repair_in_same_loop(tmp_path: Path, corrects_summary: bool, shape: str) -> None:
     import re
 
@@ -2197,6 +2197,9 @@ async def test_uncited_summary_gets_one_repair_in_same_loop(tmp_path: Path, corr
             token = re.search(r'\[\[cite:[a-f0-9]{24}\]\]', str(messages)).group()
             summary = f'原始事实数量 12 {token}' if corrects_summary and len(self.calls) == 3 else '原始事实数量 12'
             body = f'原始事实数量 12 {token}' if shape == 'summary' else '原始事实数量 12'
+            if shape == 'no_numbers':
+                text = '分析已完成，原始事实已核对。' + (token if corrects_summary and len(self.calls) == 3 else '')
+                return LLMResponse(content=text, finish_reason='stop')
             if shape == 'no_heading':
                 return LLMResponse(content=f'分析已完成，{summary}', finish_reason='stop')
             return LLMResponse(content=f'## 结论\n\n{summary}\n\n## 证据\n分析已完成，{body}', finish_reason='stop')
@@ -2216,6 +2219,7 @@ async def test_uncited_summary_gets_one_repair_in_same_loop(tmp_path: Path, corr
         assert result.error_code == 'ANALYST-RUNTIME-CITATION-001'
         assert result.terminal_reason == 'citation_validation_failed'
         assert '原始事实数量 12' not in result.content
+        assert '原始事实已核对' not in result.content
         assert '引用核验未通过' in result.content
         assert not any(event.get('type') == 'final_response' and '原始事实数量 12' in event.get('content','') for event in session.events)
 
@@ -2330,3 +2334,12 @@ async def test_prior_scope_confirmation_is_not_an_audited_original_read(tmp_path
     assert len(provider.calls) == 1
     assert result.error_code is None
     assert result.terminal_reason == 'completed'
+
+
+@pytest.mark.asyncio
+async def test_source_free_advice_needs_no_fabricated_citation(tmp_path):
+    provider = _SequenceProvider([LLMResponse(content='分析已完成，建议联系负责人核对范围。', finish_reason='stop')])
+    agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, tool_profile='trusted-analysis')
+    result = await agent._run_agent_loop([{'role':'user','content':'给一个不需要资料的建议'}], citation_conversation_id='conversation')
+    assert len(provider.calls) == 1 and result.error_code is None
+    assert '[[cite:' not in result.content

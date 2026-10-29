@@ -1846,7 +1846,7 @@ class AgentLoop:
 
                 unknown_ids = ({m.group(1) for m in CITATION_TOKEN.finditer(final_content or "")}
                                - _issued_citation_ids) if citation_conversation_id and self.tool_profile == "trusted-analysis" else set()
-                missing_summary = bool(final_content and uncited_summary(final_content, _issued_citation_ids, require_numeric=_audited_citation_read))
+                missing_summary = bool(final_content and uncited_summary(final_content, _issued_citation_ids, require_read=_audited_citation_read))
                 if unknown_ids or missing_summary:
                     if not _citation_recovery_attempted and iteration < self.max_iterations:
                         _citation_recovery_attempted = True
