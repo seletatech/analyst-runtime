@@ -74,6 +74,7 @@ async def test_active_loop_bounds_tool_results_without_mutating_previous_prefix(
 
 def test_library_context_uses_the_issued_read_citation_policy(tmp_path, monkeypatch):
     from types import SimpleNamespace
+
     from analyst_runtime.agent import context
     scope = SimpleNamespace(user_id='user', private=tmp_path/'private', snapshot_run_id='run', snapshot_sha256='a'*64)
     monkeypatch.setattr(context, 'account_workspace', lambda: scope)
