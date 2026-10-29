@@ -1929,6 +1929,8 @@ async def test_active_context_is_compacted_after_token_threshold(
         [
             {"role": "system", "content": "system rules"},
             {"role": "user", "content": "OLD RAW CONTEXT"},
+            {"role": "assistant", "content": "historical response"},
+            {"role": "user", "content": "CURRENT REQUEST"},
         ]
     )
 
@@ -1941,6 +1943,7 @@ async def test_active_context_is_compacted_after_token_threshold(
     rendered = str(final_request)
     assert "preserved facts and unfinished work" in rendered
     assert "OLD RAW CONTEXT" not in rendered
+    assert "CURRENT REQUEST" in rendered
     assert final_request[0] == {"role": "system", "content": "system rules"}
 
 
@@ -2203,3 +2206,50 @@ async def test_uncited_summary_gets_one_repair_in_same_loop(tmp_path: Path, corr
     assert len(provider.calls) == 3
     assert any(event.get('reason') == 'uncited_summary' for event in session.events)
     assert ('摘要未附可核验引用' in result.content) is (not corrects_summary)
+
+@pytest.mark.asyncio
+async def test_active_user_scope_survives_a_lossy_context_summary(tmp_path: Path) -> None:
+    goal = "Summarize only these five rolls for the confirmed reporting day; keep production separate from receipts."
+    provider = _SequenceProvider([
+        LLMResponse(content="unfinished evidence review", finish_reason="length", usage={"prompt_tokens": 11}),
+        LLMResponse(content="Earlier evidence concerned a different purchase order.", finish_reason="stop"),
+        LLMResponse(content="final report", finish_reason="stop"),
+    ])
+    agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path,
+                      context_compact_threshold=10, context_compact_keep_messages=1)
+    await agent._run_agent_loop([
+        {"role":"system","content":"Follow the user's current scope."},
+        {"role":"user","content":"historical unrelated request"},
+        {"role":"assistant","content":"historical evidence"},
+        {"role":"user","content":goal},
+    ])
+    assert any(message.get("role")=="user" and message.get("content")==goal
+               for message in provider.calls[-1]), "Lossy compaction removed the actual active user scope"
+
+
+@pytest.mark.asyncio
+async def test_applied_steer_and_request_survive_later_lossy_compaction(tmp_path: Path) -> None:
+    provider = _SequenceProvider([
+        LLMResponse(content="reading evidence", tool_calls=[ToolCallRequest(id="call-goal", name="exec", arguments={"command":"read evidence"})]),
+        LLMResponse(content="partial", finish_reason="length", usage={"prompt_tokens":11}),
+        LLMResponse(content="Summary omits every user constraint.", finish_reason="stop"),
+        LLMResponse(content="Final response has no actions remaining. " * 20, finish_reason="stop"),
+    ])
+    bus = MessageBus()
+    agent = AgentLoop(bus=bus, provider=provider, workspace=tmp_path,
+                      context_compact_threshold=10, context_compact_keep_messages=1)
+    agent.tools.register(_StaticAnalysisExec({"value":1}))
+    execution_key="web:run-goal"
+    session=agent.sessions.get_or_create("web:conversation-goal")
+    steer=InboundMessage(channel="web", sender_id="user", chat_id="run-goal",
+        content="Only the confirmed reporting day; exclude receipt dates.", run_id="run-goal",
+        conversation_id="conversation-goal", metadata={"control":"steer","steer_id":"scope-goal"})
+    await agent.steering.handle_control(steer, run_active=True)
+    result=await agent._run_agent_loop([{"role":"user","content":"Keep all five rolls in scope."}],
+                                     execution_key=execution_key, session=session)
+    assert result.content==("Final response has no actions remaining. " * 20).strip()
+    users=[message["content"] for message in provider.calls[-1] if message.get("role")=="user"]
+    assert "Keep all five rolls in scope." in users
+    assert any(steer.content in content for content in users)
+    assert sum("Keep all five rolls in scope."==content for content in users)==1
+    assert (await bus.consume_outbound()).metadata["control"]=="steer_applied"

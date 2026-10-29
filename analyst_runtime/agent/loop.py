@@ -6,6 +6,7 @@ import json
 import os
 import re
 import uuid
+from collections.abc import Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -1317,6 +1318,10 @@ class AgentLoop:
         if isinstance(read_tool, ReadFileTool):
             read_tool.set_vision_context(model_supports_vision(active_model))
         messages = initial_messages
+        # Real request/steering inputs must survive a lossy summary; tool and retry messages are not authority.
+        request_messages = [
+            message for message in initial_messages if message.get("role") == "user"
+        ][-1:]
         iteration = 0
         final_content = None
         tools_used: list[str] = []
@@ -1582,6 +1587,7 @@ class AgentLoop:
                 # or persistent session events; later turns can reread the audited PDF.
                 if pdf_images:
                     messages.append({"role": "user", "content": pdf_images})
+                before_steer = messages[-1] if messages else None
                 steered_messages = await self.steering.apply_pending(
                     execution_key,
                     messages,
@@ -1589,6 +1595,11 @@ class AgentLoop:
                     parent_uuid=parent_uuid,
                 )
                 if steered_messages:
+                    if (
+                        steered_messages[-1] is not before_steer
+                        and steered_messages[-1].get("role") == "user"
+                    ):
+                        request_messages.append(steered_messages[-1])
                     messages = steered_messages
                     final_content = None
                     continue
@@ -1639,6 +1650,7 @@ class AgentLoop:
                     response.usage,
                     model=active_model,
                     telemetry=model_telemetry,
+                    request_messages=request_messages,
                 )
                 if messages is not messages_before_compaction and session and request_uuid:
                     session.add_event(
@@ -1686,6 +1698,7 @@ class AgentLoop:
                     response.usage,
                     model=active_model,
                     telemetry=model_telemetry,
+                    request_messages=request_messages,
                 )
                 if messages is not messages_before_compaction and session and request_uuid:
                     session.add_event(
@@ -1808,6 +1821,7 @@ class AgentLoop:
                     record_retry("text_only_midtask")
                     continue
 
+                before_steer = messages[-1] if messages else None
                 steered_messages = await self.steering.apply_pending(
                     execution_key,
                     messages,
@@ -1816,6 +1830,11 @@ class AgentLoop:
                     preceding_assistant=response.content,
                 )
                 if steered_messages:
+                    if (
+                        steered_messages[-1] is not before_steer
+                        and steered_messages[-1].get("role") == "user"
+                    ):
+                        request_messages.append(steered_messages[-1])
                     messages = steered_messages
                     final_content = None
                     continue
@@ -1899,6 +1918,7 @@ class AgentLoop:
         *,
         model: str,
         telemetry: RunModelTelemetry | None = None,
+        request_messages: Sequence[dict[str, Any]] = (),
     ) -> list[dict[str, Any]]:
         """Replace old model context with a summary after the token threshold."""
         prompt_tokens = int(
@@ -1914,6 +1934,7 @@ class AgentLoop:
             messages,
             model=model,
             telemetry=telemetry,
+            request_messages=request_messages,
         )
         if compacted is messages:
             return messages
@@ -1931,6 +1952,7 @@ class AgentLoop:
         *,
         model: str,
         telemetry: RunModelTelemetry | None = None,
+        request_messages: Sequence[dict[str, Any]] = (),
     ) -> list[dict[str, Any]]:
         """Summarize older messages while preserving system rules and recent work."""
         leading_system_count = 0
@@ -2004,6 +2026,10 @@ class AgentLoop:
                 "role": "assistant",
                 "content": "Understood. I will continue from this compacted context.",
             },
+            *[
+                message for message in request_messages
+                if any(message is old for old in old_messages)
+            ],
             *messages[cut_at:],
         ]
 
