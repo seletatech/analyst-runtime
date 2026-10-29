@@ -2173,7 +2173,8 @@ async def test_citation_token_is_issued_by_read_and_bound_to_tool_event(tmp_path
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("corrects_summary", [True, False])
-async def test_uncited_summary_gets_one_repair_in_same_loop(tmp_path: Path, corrects_summary: bool) -> None:
+@pytest.mark.parametrize("omit_all", [True, False])
+async def test_uncited_summary_gets_one_repair_in_same_loop(tmp_path: Path, corrects_summary: bool, omit_all: bool) -> None:
     import re
 
     upload = tmp_path / 'uploads' / 'user' / 'conversation' / 'version'
@@ -2194,8 +2195,9 @@ async def test_uncited_summary_gets_one_repair_in_same_loop(tmp_path: Path, corr
                     id='read-one', name='read_file', arguments={'path': str(source)}
                 )])
             token = re.search(r'\[\[cite:[a-f0-9]{24}\]\]', str(messages)).group()
-            summary = f'原始事实 {token}' if corrects_summary and len(self.calls) == 3 else '原始事实'
-            return LLMResponse(content=f'## 结论\n\n{summary}\n\n## 证据\n分析已完成，原始事实 {token}', finish_reason='stop')
+            summary = f'原始事实数量 12 {token}' if corrects_summary and len(self.calls) == 3 else '原始事实数量 12'
+            body = '原始事实数量 12' if omit_all else f'原始事实数量 12 {token}'
+            return LLMResponse(content=f'## 结论\n\n{summary}\n\n## 证据\n分析已完成，{body}', finish_reason='stop')
 
     provider = Provider([])
     agent = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, tool_profile='trusted-analysis')

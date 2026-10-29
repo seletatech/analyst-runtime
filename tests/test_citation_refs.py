@@ -93,3 +93,10 @@ def test_account_scope_allows_owned_history_but_rejects_other_owner(tmp_path):
 def test_one_sentence_summary_also_requires_a_source():
     token = '[[cite:'+'a'*24+']]'
     assert uncited_summary('**一句话结论**：original fact.\n\n正文 '+token, {'a'*24})
+
+
+def test_numeric_summary_without_any_tokens_still_requires_read_evidence():
+    issued = {'a' * 24}
+    assert uncited_summary('**一句话结论**：当天产出 12 m，投入 15 m。\n\n正文未附任何标识。', issued)
+    assert not uncited_summary('**一句话结论**：请与负责人确认。', issued)
+    assert not uncited_summary('**一句话结论**：当天产出 12 m。', set())

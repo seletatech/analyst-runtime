@@ -15,17 +15,18 @@ SUMMARY_HEADING = re.compile(r"(?m)^\s*(?:#{1,6}\s*|\*\*)?(?:一句话结论|核
 
 
 def uncited_summary(answer: str, issued_ids: set[str]) -> bool:
-    """Detect an identifiable summary lacking a reference when cited evidence exists.
+    """Detect an uncited summary after evidence reads, including numeric summaries.
 
     This is a narrow presentation check, not a claim-to-evidence verifier.
     """
-    if not any(match.group(1) in issued_ids for match in CITATION_TOKEN.finditer(answer)):
+    if not issued_ids:
         return False
+    has_citation = any(match.group(1) in issued_ids for match in CITATION_TOKEN.finditer(answer))
     heading = SUMMARY_HEADING.search(answer)
     if not heading:
         return False
     paragraph = re.split(r"\n\s*\n|\n#{1,6}\s", answer[heading.end():], maxsplit=1)[0]
-    if not paragraph.strip():
+    if not paragraph.strip() or (not has_citation and not re.search(r"\d", paragraph)):
         return False
     return not any(match.group(1) in issued_ids for match in CITATION_TOKEN.finditer(paragraph))
 
